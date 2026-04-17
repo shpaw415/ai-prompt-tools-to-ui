@@ -1,17 +1,17 @@
-# @frame-master/plugin-agentic-ui
+# AI-prompt-tools-to-UI
 
 Agentic Router plugin for Frame-Master.
 
 ## Installation
 
 ```bash
-bun add @frame-master/plugin-agentic-ui zod
+bun add ai-prompt-tools-to-ui
 ```
 
 ## Usage
 
 ```typescript
-import { AgenticRouter, z } from "@frame-master/plugin-agentic-ui";
+import { AgenticRouter, z } from "ai-prompt-tools-to-ui";
 
 const router = new AgenticRouter({
   model: "mock-agentic-llm",
@@ -52,7 +52,7 @@ directly on the router instead of repeating the same instruction in every prompt
 import {
   AgenticRouter,
   createGitHubCopilotProvider,
-} from "@frame-master/plugin-agentic-ui";
+} from "ai-prompt-tools-to-ui";
 
 const router = new AgenticRouter({
   outputFormat: "html",
@@ -87,7 +87,7 @@ import {
   AgenticRouter,
   type AgenticLLMProvider,
   z,
-} from "@frame-master/plugin-agentic-ui";
+} from "ai-prompt-tools-to-ui";
 
 const provider: AgenticLLMProvider = {
   name: "openai-compatible",
@@ -144,7 +144,7 @@ import {
   createChatGPTProvider,
   createGitHubCopilotProvider,
   z,
-} from "@frame-master/plugin-agentic-ui";
+} from "ai-prompt-tools-to-ui";
 
 const router = new AgenticRouter({
   useStreaming: true,
@@ -186,7 +186,7 @@ import {
   AgenticRouter,
   createGitHubCopilotProvider,
   z,
-} from "@frame-master/plugin-agentic-ui";
+} from "ai-prompt-tools-to-ui";
 
 const router = new AgenticRouter({
   useStreaming: true,
@@ -220,7 +220,7 @@ router.registerTool(
 
 ```typescript
 import type { FrameMasterConfig } from "frame-master/server/types";
-import frameMasterPluginAgenticUI from "@frame-master/plugin-agentic-ui";
+import frameMasterPluginAgenticUI from "ai-prompt-tools-to-ui";
 
 const config: FrameMasterConfig = {
   HTTPServer: { port: 3000 },
