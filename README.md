@@ -273,6 +273,107 @@ Typical server flow:
 This transport model is safer than keeping an in-process callback open, because
 the correction step naturally crosses the client/server boundary.
 
+## Client SDK
+
+The package now ships with a browser-oriented client entrypoint at
+`ai-prompt-tools-to-ui/client`.
+
+Use it when you want the frontend to manage conversation ids, streaming state,
+and correction resumes while the real router, provider keys, and sensitive
+tools stay on your backend.
+
+```typescript
+import {
+  AgenticFlowClient,
+  createFetchAgenticFlowTransport,
+} from "ai-prompt-tools-to-ui/client";
+
+const client = new AgenticFlowClient({
+  transport: createFetchAgenticFlowTransport({
+    baseUrl: "/api/agentic",
+  }),
+});
+
+const response = await client.run("Show the current employees", {
+  systemInstruction: "Use tools before guessing.",
+});
+
+if (response.status === "needs-user-input") {
+  await client.resumeCorrection({
+    values: {
+      name: "Alice Martin",
+    },
+  });
+}
+```
+
+The client keeps local state for:
+
+- `conversationId`
+- accumulated `content`
+- planned tool calls during streaming
+- executed tool results
+- pending correction payloads
+- final completed or paused response
+
+You can observe that state through `client.getState()` or `client.subscribe()`.
+
+### Streaming From The Client SDK
+
+```typescript
+for await (const event of client.stream("Show the current employees")) {
+  if (event.type === "render") {
+    console.log(event.content);
+  }
+
+  if (event.type === "needs-user-input") {
+    console.log(event.response.pendingCorrection);
+  }
+}
+```
+
+The client updates its internal state while the stream is running, so your UI
+can render optimistic tool activity and partial content without rebuilding that
+state machine itself.
+
+### Default Proxy Contract
+
+`createFetchAgenticFlowTransport()` assumes a backend proxy with these default
+POST endpoints relative to `baseUrl`:
+
+- `run`
+- `stream`
+- `reset` if you configure `resetPath`
+
+The request body mirrors the router inputs:
+
+```json
+{
+  "prompt": "Show the current employees",
+  "systemInstruction": "Use tools before guessing.",
+  "conversationId": "hr-demo",
+  "correctionAnswer": {
+    "pendingCorrection": { "...": "router payload" },
+    "values": { "name": "Alice Martin" },
+    "confirmed": true
+  }
+}
+```
+
+The buffered `run` endpoint can return either:
+
+- a raw `AgenticRouterResponse`
+- or `{ conversationId, response }`
+
+The streaming endpoint should emit server-sent events with JSON `data:` payloads
+containing either:
+
+- a raw `AgenticRouterStreamEvent`
+- or `{ conversationId, event }`
+
+That keeps the transport thin and lets your backend stay very close to
+`runAndRender()` and `runAndRenderStream()`.
+
 ## Styling The Response
 
 If you want the generated HTML to follow a specific styling strategy, configure it

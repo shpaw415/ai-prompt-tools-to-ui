@@ -7,6 +7,7 @@
 	"module": "./index.ts",
 	"exports": {
 		".": "./index.ts",
+		"./client": "./client/index.ts",
 		"./history/bun-sqlite": "./history/bun-sqlite.ts",
 		"./history/cloudflare-d1": "./history/cloudflare-d1.ts",
 		"./history/cloudflare-kv": "./history/cloudflare-kv.ts",
