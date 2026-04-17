@@ -69,9 +69,12 @@ export function buildNativePlanPrompt(request: AgenticLLMPlanRequest): string {
 	return [
 		"You are the planning engine for an agentic router.",
 		"Use native tool calls when additional backend data is required.",
+		"Planning is not the render phase. Do not answer with HTML, prose, or a client-side form.",
 		"If the current tool results are already sufficient, do not call any tool.",
 		"Do not invent missing required tool arguments.",
 		"If a tool is clearly needed but required fields are missing or ambiguous, emit the tool call with only the known arguments so the router can ask the user for clarification.",
+		"Do not ask the user follow-up questions directly and do not replace a missing-argument tool call with a hand-written form. The router handles clarification after validation.",
+		"If the user wants to create, update, remove, or otherwise mutate backend data, emit the relevant tool call even when some required arguments are still missing.",
 		`Desired UI format: ${request.outputFormat}`,
 		`Maximum tool calls in this step: ${request.maxToolCalls}`,
 		request.systemInstruction
@@ -363,10 +366,6 @@ export function toGeminiToolSchema(
 
 	if (schema.required?.length) {
 		result.required = schema.required;
-	}
-
-	if (schema.additionalProperties !== undefined) {
-		result.additionalProperties = schema.additionalProperties;
 	}
 
 	return result;

@@ -648,6 +648,145 @@ describe("AgenticRouter", () => {
 	});
 
 	/**
+	 * Covers enum-backed correction fields in the HTML pause form.
+	 *
+	 * This is useful because enum validation issues should preserve the allowed
+	 * values so browser clients can render a constrained select instead of a free
+	 * text input.
+	 */
+	it("renders select controls for enum correction fields in html output", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-html-enum-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "list_employees",
+								rationale: "Employee data is required.",
+								arguments: {},
+							},
+						],
+					};
+				}
+
+				return {
+					phase: "render",
+					content: "unused",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "html",
+			interactiveCorrectionForm: {
+				callbackName: "handleAgenticCorrection",
+			},
+		});
+
+		router.registerTool(
+			"list_employees",
+			"List employees.",
+			z.object({
+				sortBy: z.enum(["salary", "name", "recent"]),
+			}),
+			async (input) => input,
+		);
+
+		const response = await router.runAndRender("List the employees");
+
+		expect(response.status).toBe("needs-user-input");
+		expect(response.pendingCorrection?.fields).toEqual([
+			{
+				name: "sortBy",
+				message: expect.any(String),
+				enumValues: ["salary", "name", "recent"],
+			},
+		]);
+		expect(response.content).toContain('<select name="sortBy">');
+		expect(response.content).toContain(
+			'<option value="">Select an option</option>',
+		);
+		expect(response.content).toContain(
+			'<option value="salary">salary</option>',
+		);
+		expect(response.content).toContain('<option value="name">name</option>');
+		expect(response.content).toContain(
+			'<option value="recent">recent</option>',
+		);
+		expect(response.content).not.toContain('type="text" name="sortBy"');
+	});
+
+	/**
+	 * Covers numeric correction fields in the HTML pause form.
+	 *
+	 * This is useful because browser forms submit string values by default, so the
+	 * correction metadata must preserve numeric intent and the rendered control
+	 * should expose a numeric input instead of generic text.
+	 */
+	it("renders number controls for numeric correction fields in html output", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-html-number-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "adjust_salary",
+								rationale: "A salary update is required.",
+								arguments: {},
+							},
+						],
+					};
+				}
+
+				return {
+					phase: "render",
+					content: "unused",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "html",
+			interactiveCorrectionForm: {
+				callbackName: "handleAgenticCorrection",
+			},
+		});
+
+		router.registerTool(
+			"adjust_salary",
+			"Adjust salary.",
+			z.object({
+				salary: z.number().positive(),
+			}),
+			async (input) => input,
+		);
+
+		const response = await router.runAndRender("Adjust the salary");
+
+		expect(response.status).toBe("needs-user-input");
+		expect(response.pendingCorrection?.fields).toEqual([
+			{
+				name: "salary",
+				message: expect.any(String),
+				valueType: "number",
+			},
+		]);
+		expect(response.content).toContain('<input type="number" name="salary"');
+		expect(response.content).toContain('inputmode="decimal"');
+		expect(response.content).toContain('step="any"');
+	});
+
+	/**
 	 * Covers the interactive correction flow for missing tool arguments.
 	 *
 	 * This is useful because the planner may identify the right tool before it has
@@ -784,6 +923,78 @@ describe("AgenticRouter", () => {
 			role: "admin",
 		});
 		expect(resumed.content).toContain("Alice Martin");
+	});
+
+	/**
+	 * Covers string-to-number coercion during correction resume.
+	 *
+	 * This is useful because HTML form submissions send numeric fields as strings,
+	 * but tools using z.number() should still resume successfully without forcing
+	 * every client to implement custom coercion logic.
+	 */
+	it("coerces numeric correction answers from strings before validation", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-number-resume-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return request.toolResults.length === 0
+						? {
+								phase: "plan",
+								toolCalls: [
+									{
+										toolName: "adjust_salary",
+										rationale: "A salary update is required.",
+										arguments: { name: "Karim" },
+									},
+								],
+							}
+						: { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: `Updated UI ${JSON.stringify(request.toolResults[0]?.result)}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"adjust_salary",
+			"Adjust salary.",
+			z.object({
+				name: z.string().min(2),
+				salary: z.number().positive(),
+			}),
+			async (input) => input,
+		);
+
+		const paused = await router.runAndRender("Adjust Karim salary");
+
+		if (!paused.pendingCorrection) {
+			throw new Error("Expected a pending correction payload.");
+		}
+
+		const resumed = await router.runAndRender("98000", undefined, {
+			correctionAnswer: {
+				pendingCorrection: paused.pendingCorrection,
+				values: { salary: "98000" },
+			},
+		});
+
+		expect(resumed.status).toBe("completed");
+		expect(resumed.toolCalls).toHaveLength(1);
+		expect(resumed.toolCalls[0]?.arguments).toEqual({
+			name: "Karim",
+			salary: 98000,
+		});
+		expect(resumed.content).toContain('"salary":98000');
 	});
 
 	/**

@@ -187,7 +187,7 @@ When a correction is required, the HTML `content` contains a `<form>` with:
 - `data-agentic-callback="handleAgenticCorrection"`
 - a hidden serialized `pendingCorrection` payload
 - a hidden `conversationId` field when one is available
-- visible inputs for missing required values
+- visible inputs for missing required values, with native `<select>` controls for enum-backed Zod fields
 - a confirmation submit button for sensitive actions
 
 The router does not own the actual browser-side JavaScript. The intended client
@@ -373,6 +373,87 @@ containing either:
 
 That keeps the transport thin and lets your backend stay very close to
 `runAndRender()` and `runAndRenderStream()`.
+
+## Server Adapter
+
+The package now also ships with a thin server-side adapter at
+`ai-prompt-tools-to-ui/server`.
+
+It is split into two layers so it stays easy to use in many runtimes:
+
+- a runtime-neutral core adapter that accepts plain request objects and calls the router
+- an optional Fetch API wrapper that turns those core methods into `Request` -> `Response` handlers
+
+### Core Adapter
+
+Use `createAgenticFlowServerAdapter()` when your runtime already has its own
+router or transport abstraction and you only want a small translation layer.
+
+```typescript
+import {
+  createAgenticFlowServerAdapter,
+} from "ai-prompt-tools-to-ui/server";
+
+const flowAdapter = createAgenticFlowServerAdapter({
+  router,
+  historyProvider,
+});
+
+const result = await flowAdapter.run({
+  prompt: "Show the current employees",
+  systemInstruction: "Use tools before guessing.",
+  conversationId: "hr-demo",
+});
+
+for await (const event of flowAdapter.stream({
+  prompt: "Show the current employees",
+  conversationId: "hr-demo",
+})) {
+  console.log(event);
+}
+
+await flowAdapter.reset?.({
+  conversationId: "hr-demo",
+});
+```
+
+By default, `reset()` is only added when you provide one of:
+
+- `historyProvider` with a `delete()` method
+- `deleteConversation(conversationId)` for a custom store
+
+### Web Handlers
+
+Use `createAgenticFlowWebHandlers()` when your runtime supports standard Fetch
+objects such as Bun, Deno, Cloudflare Workers, or route handlers built around
+`Request` and `Response`.
+
+```typescript
+import {
+  createAgenticFlowServerAdapter,
+  createAgenticFlowWebHandlers,
+} from "ai-prompt-tools-to-ui/server";
+
+const adapter = createAgenticFlowServerAdapter({
+  router,
+  historyProvider,
+});
+
+const handlers = createAgenticFlowWebHandlers({ adapter });
+
+export const POST = handlers.run;
+export const STREAM = handlers.stream;
+export const RESET = handlers.reset;
+```
+
+The web wrapper does three things only:
+
+- parses the JSON request body into the client transport shape
+- returns JSON for `run`
+- returns SSE for `stream`
+
+That keeps framework ownership outside the package while still giving you a
+ready-to-use adapter for runtimes that already share the Fetch API.
 
 ## Styling The Response
 

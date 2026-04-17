@@ -248,6 +248,36 @@ describe("AgenticFlowClient", () => {
 });
 
 describe("createFetchAgenticFlowTransport", () => {
+	it("supports relative proxy base URLs in browser-style setups", async () => {
+		const seenUrls: string[] = [];
+		const transport = createFetchAgenticFlowTransport({
+			baseUrl: "/api/agentic",
+			fetchImplementation: (async (input) => {
+				seenUrls.push(String(input));
+
+				return new Response(
+					JSON.stringify(
+						createResponse({
+							prompt: "hello",
+							content: "Buffered hello",
+						}),
+					),
+					{
+						status: 200,
+						headers: { "content-type": "application/json" },
+					},
+				);
+			}) as typeof fetch,
+		});
+
+		await transport.run({
+			prompt: "hello",
+			conversationId: "relative-thread",
+		});
+
+		expect(seenUrls).toEqual(["/api/agentic/run"]);
+	});
+
 	/**
 	 * Covers fetch-based transport parsing for both buffered and streamed flows.
 	 *

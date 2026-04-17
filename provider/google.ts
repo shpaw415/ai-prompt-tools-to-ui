@@ -106,7 +106,6 @@ export function createGoogleProvider<
 							toolConfig: {
 								functionCallingConfig: {
 									mode: "AUTO",
-									allowedFunctionNames: request.tools.map((tool) => tool.name),
 								},
 							},
 							generationConfig: {

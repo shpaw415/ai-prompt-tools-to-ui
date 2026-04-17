@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Agentic HR Control Room</title>
+		<style>
+			@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap");
+
+			:root {
+				--bg:           #0a0a0e;
+				--surface:      #111116;
+				--panel:        #16161d;
+				--panel-raised: #1c1c25;
+				--border:       rgba(255, 255, 255, 0.07);
+				--border-mid:   rgba(255, 255, 255, 0.12);
+				--ink:          #e4e2df;
+				--ink-soft:     #b0adb8;
+				--muted:        #6b6876;
+				--subtle:       #2e2d38;
+				--teal:         #1fd1a0;
+				--teal-dim:     rgba(31, 209, 160, 0.1);
+				--teal-border:  rgba(31, 209, 160, 0.25);
+				--orange:       #f97316;
+				--orange-dim:   rgba(249, 115, 22, 0.1);
+				--orange-border:rgba(249, 115, 22, 0.28);
+				--amber:        #fbbf24;
+				--amber-dim:    rgba(251, 191, 36, 0.1);
+				--red:          #f87171;
+				--red-dim:      rgba(248, 113, 113, 0.08);
+				--red-border:   rgba(248, 113, 113, 0.3);
+				--violet:       #a78bfa;
+				--violet-dim:   rgba(167, 139, 250, 0.1);
+			}
+
+			*, *::before, *::after { box-sizing: border-box; }
+
+			body {
+				margin: 0;
+				font-family: "Inter", -apple-system, "Segoe UI", sans-serif;
+				font-size: 13px;
+				line-height: 1.6;
+				background: var(--bg);
+				color: var(--ink);
+				min-height: 100svh;
+				-webkit-font-smoothing: antialiased;
+			}
+
+			h1, h2, h3, h4, p { margin: 0; }
+			button, input, textarea, select { font: inherit; }
+			button { cursor: pointer; }
+
+			/* ── Shell ────────────────────────────────────── */
+
+			.shell {
+				display: grid;
+				grid-template-columns: 280px 1fr;
+				grid-template-rows: 52px 1fr;
+				height: 100svh;
+				overflow: hidden;
+			}
+
+			/* ── Top bar ──────────────────────────────────── */
+
+			.topbar {
+				grid-column: 1 / -1;
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 0 20px;
+				background: var(--surface);
+				border-bottom: 1px solid var(--border);
+				gap: 16px;
+			}
+
+			.topbar-brand {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				flex-shrink: 0;
+			}
+
+			.topbar-icon {
+				width: 26px;
+				height: 26px;
+				border-radius: 7px;
+				background: var(--teal);
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 11px;
+				font-weight: 500;
+				color: #0a0a0e;
+				flex-shrink: 0;
+			}
+
+			.topbar-title {
+				font-size: 13px;
+				font-weight: 600;
+				color: var(--ink);
+				white-space: nowrap;
+			}
+
+			.topbar-slash {
+				color: var(--subtle);
+				font-size: 16px;
+				font-weight: 300;
+			}
+
+			.topbar-sub {
+				font-size: 12px;
+				color: var(--muted);
+				white-space: nowrap;
+				font-family: "IBM Plex Mono", monospace;
+			}
+
+			.topbar-badges {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				flex-wrap: wrap;
+			}
+
+			/* ── Sidebar ──────────────────────────────────── */
+
+			.sidebar {
+				background: var(--surface);
+				border-right: 1px solid var(--border);
+				display: flex;
+				flex-direction: column;
+				overflow-y: auto;
+				overflow-x: hidden;
+			}
+
+			.sidebar::-webkit-scrollbar { width: 4px; }
+			.sidebar::-webkit-scrollbar-thumb { background: var(--subtle); border-radius: 4px; }
+
+			.side-block {
+				padding: 16px 18px;
+				border-bottom: 1px solid var(--border);
+			}
+
+			.side-block:last-child { border-bottom: none; }
+
+			/* ── Workspace ────────────────────────────────── */
+
+			.workspace {
+				display: flex;
+				flex-direction: column;
+				overflow-y: auto;
+				overflow-x: hidden;
+				background: var(--bg);
+			}
+
+			.workspace::-webkit-scrollbar { width: 4px; }
+			.workspace::-webkit-scrollbar-thumb { background: var(--subtle); border-radius: 4px; }
+
+			.w-block {
+				padding: 18px 22px;
+				border-bottom: 1px solid var(--border);
+			}
+
+			.w-block:last-child { border-bottom: none; }
+
+			/* ── Section labels ───────────────────────────── */
+
+			.label {
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 10px;
+				letter-spacing: 0.1em;
+				text-transform: uppercase;
+				color: var(--muted);
+			}
+
+			.block-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 12px;
+				margin-bottom: 12px;
+			}
+
+			/* ── Badges ───────────────────────────────────── */
+
+			.badges {
+				display: flex;
+				flex-wrap: wrap;
+				align-items: center;
+				gap: 6px;
+			}
+
+			.badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 5px;
+				padding: 3px 9px;
+				border-radius: 5px;
+				background: var(--panel);
+				border: 1px solid var(--border);
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 10px;
+				color: var(--muted);
+				white-space: nowrap;
+			}
+
+			.badge::before {
+				content: "";
+				width: 5px;
+				height: 5px;
+				border-radius: 50%;
+				background: currentColor;
+				flex-shrink: 0;
+			}
+
+			.badge[data-tone="secondary"] {
+				background: var(--teal-dim);
+				border-color: var(--teal-border);
+				color: var(--teal);
+			}
+
+			.badge[data-tone="accent"] {
+				background: var(--orange-dim);
+				border-color: var(--orange-border);
+				color: var(--orange);
+			}
+
+			/* ── Metric cards ─────────────────────────────── */
+
+			.metrics {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 6px;
+				margin-top: 10px;
+			}
+
+			.metric-card {
+				padding: 10px 12px;
+				border-radius: 8px;
+				background: var(--panel-raised);
+				border: 1px solid var(--border);
+			}
+
+			.metric-card .label { font-size: 9px; }
+
+			.metric-card strong {
+				display: block;
+				font-size: 1.05rem;
+				font-weight: 600;
+				color: var(--ink);
+				margin-top: 4px;
+				line-height: 1.2;
+				letter-spacing: -0.01em;
+			}
+
+			/* ── Inputs ───────────────────────────────────── */
+
+			.text-input, .textarea {
+				width: 100%;
+				background: var(--panel);
+				border: 1px solid var(--border);
+				border-radius: 7px;
+				padding: 8px 11px;
+				color: var(--ink);
+				transition: border-color 0.15s, box-shadow 0.15s;
+			}
+
+			.text-input::placeholder, .textarea::placeholder { color: var(--muted); }
+
+			.text-input:focus, .textarea:focus {
+				outline: none;
+				border-color: var(--teal-border);
+				box-shadow: 0 0 0 3px var(--teal-dim);
+			}
+
+			.text-input:disabled, .textarea:disabled { opacity: 0.45; }
+
+			.textarea {
+				min-height: 88px;
+				resize: vertical;
+				line-height: 1.55;
+			}
+
+			/* ── Buttons ──────────────────────────────────── */
+
+			.btn, .primary, .secondary, .ghost {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				border: 0;
+				border-radius: 7px;
+				padding: 7px 13px;
+				font-size: 12px;
+				font-weight: 500;
+				white-space: nowrap;
+				transition: opacity 0.15s, background 0.15s, box-shadow 0.15s;
+			}
+
+			.btn:disabled, .primary:disabled, .secondary:disabled, .ghost:disabled {
+				opacity: 0.38;
+				cursor: not-allowed;
+			}
+
+			.primary {
+				background: var(--teal);
+				color: #0a0a0e;
+			}
+
+			.primary:hover:not(:disabled) { background: #28e8b2; }
+
+			.secondary {
+				background: var(--orange-dim);
+				border: 1px solid var(--orange-border);
+				color: var(--orange);
+			}
+
+			.secondary:hover:not(:disabled) { background: rgba(249, 115, 22, 0.18); }
+
+			.ghost {
+				background: var(--panel-raised);
+				border: 1px solid var(--border);
+				color: var(--ink-soft);
+			}
+
+			.ghost:hover:not(:disabled) {
+				background: var(--panel);
+				border-color: var(--border-mid);
+				color: var(--ink);
+			}
+
+			/* ── Controls row ─────────────────────────────── */
+
+			.controls, .actions {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 6px;
+			}
+
+			/* ── Roster ───────────────────────────────────── */
+
+			.roster {
+				display: flex;
+				flex-direction: column;
+				gap: 5px;
+				margin-top: 10px;
+			}
+
+			.roster-card {
+				padding: 9px 11px;
+				border-radius: 8px;
+				background: var(--panel-raised);
+				border: 1px solid var(--border);
+			}
+
+			.roster-card h4 {
+				font-size: 12px;
+				font-weight: 500;
+				color: var(--ink);
+			}
+
+			.roster-meta {
+				display: flex;
+				justify-content: space-between;
+				gap: 8px;
+				color: var(--muted);
+				font-size: 11px;
+				margin-top: 2px;
+			}
+
+			.roster-meta span:last-child {
+				font-family: "IBM Plex Mono", monospace;
+				color: var(--teal);
+				font-size: 10px;
+			}
+
+			/* ── Sample prompts ───────────────────────────── */
+
+			.prompt-grid {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 5px;
+				margin-top: 8px;
+			}
+
+			.prompt-chip {
+				background: var(--panel-raised);
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				padding: 4px 9px;
+				font-size: 11px;
+				color: var(--muted);
+				cursor: pointer;
+				text-align: left;
+				transition: border-color 0.12s, color 0.12s, background 0.12s;
+			}
+
+			.prompt-chip:hover {
+				border-color: var(--teal-border);
+				color: var(--ink);
+				background: var(--teal-dim);
+			}
+
+			/* ── Timeline ─────────────────────────────────── */
+
+			.timeline {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				max-height: 360px;
+				overflow-y: auto;
+				overflow-x: hidden;
+			}
+
+			.timeline::-webkit-scrollbar { width: 3px; }
+			.timeline::-webkit-scrollbar-thumb { background: var(--subtle); border-radius: 3px; }
+
+			.timeline-item {
+				padding: 8px 12px 8px 14px;
+				border-radius: 7px;
+				background: var(--panel);
+				border: 1px solid var(--border);
+				border-left: 2px solid var(--subtle);
+			}
+
+			.timeline-item[data-kind="tool-call"]   { border-left-color: var(--orange); }
+			.timeline-item[data-kind="tool-result"] { border-left-color: var(--teal); }
+			.timeline-item[data-kind="render"]      { border-color: var(--teal-border); border-left-color: var(--teal); background: var(--teal-dim); }
+			.timeline-item[data-kind="done"]        { border-left-color: var(--teal); }
+			.timeline-item[data-kind="pause"]       { border-left-color: var(--amber); }
+			.timeline-item[data-kind="prompt"]      { border-left-color: var(--violet); }
+			.timeline-item[data-kind="info"]        { border-left-color: var(--muted); }
+			.timeline-item[data-kind="error"]       { border-color: var(--red-border); border-left-color: var(--red); background: var(--red-dim); }
+
+			.timeline-item header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+				margin-bottom: 2px;
+			}
+
+			.timeline-item header strong {
+				font-size: 11px;
+				font-weight: 500;
+				color: var(--ink-soft);
+			}
+
+			.timeline-item header small {
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 10px;
+				color: var(--muted);
+				flex-shrink: 0;
+			}
+
+			.timeline-item .muted {
+				font-size: 11px;
+				color: var(--muted);
+			}
+
+			/* ── Correction panel ─────────────────────────── */
+
+			.correction-fields {
+				display: grid;
+				gap: 10px;
+			}
+
+			.correction-fields span {
+				font-size: 11px;
+				color: var(--muted);
+				display: block;
+				margin-bottom: 3px;
+			}
+
+			/* ── Render frame ─────────────────────────────── */
+
+			.render-frame {
+				border-radius: 8px;
+				background: #fff;
+				border: 1px solid var(--border);
+				min-height: 360px;
+				overflow: auto;
+			}
+
+			.render-placeholder {
+				display: grid;
+				place-items: center;
+				min-height: 320px;
+				text-align: center;
+				color: #9ca3af;
+				font-size: 12px;
+			}
+
+			/* ── Notice ───────────────────────────────────── */
+
+			.notice {
+				padding: 9px 12px;
+				border-radius: 7px;
+				background: var(--amber-dim);
+				border: 1px solid rgba(251, 191, 36, 0.2);
+				color: var(--amber);
+				font-size: 11px;
+				line-height: 1.5;
+			}
+
+			code {
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 10px;
+				background: rgba(255, 255, 255, 0.08);
+				padding: 1px 5px;
+				border-radius: 3px;
+			}
+
+			.timeline-detail { color: var(--muted); font-size: 11px; }
+
+			p.muted, div.muted, span.muted { color: var(--muted); }
+
+			/* ── Workspace hero ───────────────────────────── */
+
+			.w-hero {
+				display: flex;
+				align-items: flex-start;
+				justify-content: space-between;
+				gap: 16px;
+				flex-wrap: wrap;
+			}
+
+			.w-hero h1 {
+				font-size: 1.25rem;
+				font-weight: 600;
+				letter-spacing: -0.02em;
+				color: var(--ink);
+				line-height: 1.3;
+			}
+
+			.w-hero .lead {
+				color: var(--muted);
+				font-size: 12px;
+				margin-top: 4px;
+				max-width: 60ch;
+				line-height: 1.6;
+			}
+
+			/* ── Responsive ───────────────────────────────── */
+
+			@media (max-width: 900px) {
+				.shell {
+					grid-template-columns: 1fr;
+					grid-template-rows: 52px auto 1fr;
+					height: auto;
+					overflow: visible;
+				}
+
+				.sidebar { overflow: visible; border-right: none; border-bottom: 1px solid var(--border); }
+				.workspace { overflow: visible; }
+			}
+
+			@media (max-width: 560px) {
+				.topbar { padding: 0 14px; }
+				.topbar-sub { display: none; }
+				.side-block, .w-block { padding: 14px 16px; }
+				.metrics { grid-template-columns: 1fr; }
+			}
+		</style>
+	</head>
+	<body>
+		<div class="shell">
+
+			<!-- Top bar -->
+			<header class="topbar">
+				<div class="topbar-brand">
+					<div class="topbar-icon">HR</div>
+					<span class="topbar-title">Control Room</span>
+					<span class="topbar-slash">/</span>
+					<span class="topbar-sub">Bun Web UI Showcase</span>
+				</div>
+				<div class="topbar-badges">
+					<span class="badge" id="provider-badge">Loading…</span>
+					<span class="badge" data-tone="secondary" id="status-badge">Idle</span>
+				</div>
+			</header>
+
+			<!-- Sidebar -->
+			<aside class="sidebar">
+				<div class="side-block" id="provider-notice" style="padding-top: 0; padding-bottom: 0; border-bottom: none;"></div>
+
+				<div class="side-block">
+					<div class="label">Payroll snapshot</div>
+					<div class="metrics" id="metrics"></div>
+				</div>
+
+				<div class="side-block">
+					<div class="label">Conversation</div>
+					<div style="margin-top: 10px; display: grid; gap: 8px;">
+						<input id="conversation-id" class="text-input" placeholder="Conversation id" />
+						<div class="controls">
+							<button class="ghost" id="new-thread-button" type="button">New thread</button>
+							<button class="ghost" id="reset-thread-button" type="button">Reset history</button>
+						</div>
+					</div>
+				</div>
+
+				<div class="side-block">
+					<div class="label">Roster</div>
+					<div class="roster" id="roster"></div>
+				</div>
+			</aside>
+
+			<!-- Workspace -->
+			<main class="workspace">
+
+				<div class="w-block">
+					<div class="w-hero">
+						<div>
+							<h1>Agentic HR control room.</h1>
+							<p class="lead">Stream tool planning, tool results, and HTML output live. Pause and resume corrections without page reloads.</p>
+						</div>
+						<div class="badges">
+							<span class="badge" id="conversation-badge">No conversation</span>
+						</div>
+					</div>
+				</div>
+
+				<div class="w-block">
+					<div class="block-header">
+						<div class="label">Prompt studio</div>
+						<span class="badge" data-tone="accent" id="prompt-badge">Awaiting prompt</span>
+					</div>
+					<form id="prompt-form" style="display: grid; gap: 8px;">
+						<textarea id="prompt-input" class="textarea" placeholder="Ask for roster summaries, salary changes, additions, or removals."></textarea>
+						<div class="prompt-grid" id="sample-prompts"></div>
+						<div class="actions">
+							<button class="primary" id="submit-button" type="submit">Stream response</button>
+							<button class="ghost" id="fill-default-button" type="button">Use default prompt</button>
+						</div>
+					</form>
+				</div>
+
+				<div class="w-block">
+					<div class="block-header">
+						<div class="label">Execution feed</div>
+					</div>
+					<div class="timeline" id="timeline"></div>
+				</div>
+
+				<div class="w-block" id="correction-panel"></div>
+
+				<div class="w-block">
+					<div class="block-header">
+						<div class="label">Rendered HTML output</div>
+					</div>
+					<div class="render-frame" id="render-frame"></div>
+				</div>
+
+			</main>
+		</div>
+		<script type="module" src="/app.js"></script>
+	</body>
+</html>

@@ -41,6 +41,8 @@ export type AgenticCorrectionReason =
 export interface AgenticPendingCorrectionField {
 	name: string;
 	message: string;
+	enumValues?: readonly string[];
+	valueType?: "string" | "number";
 }
 
 export interface AgenticPendingCorrection {
@@ -1035,11 +1037,15 @@ export class AgenticRouter {
 		| { status: "needs-user-input"; response: AgenticRouterResponse }
 	> {
 		const pendingCorrection = correctionAnswer.pendingCorrection;
+		const normalizedValues = normalizeCorrectionValues(
+			correctionAnswer.values,
+			pendingCorrection.fields,
+		);
 		const mergedToolCall: AgenticToolCallPlan = {
 			...pendingCorrection.toolCall,
 			arguments: {
 				...pendingCorrection.toolCall.arguments,
-				...(correctionAnswer.values ?? {}),
+				...normalizedValues,
 			},
 		};
 
@@ -1085,7 +1091,12 @@ export class AgenticRouter {
 				return {
 					status: "needs-user-input",
 					response: this._buildPausedResponse(
-						this._createValidationCorrection(plan, context, validation.error),
+						this._createValidationCorrection(
+							plan,
+							context,
+							definition.schema,
+							validation.error,
+						),
 						context.toolResults,
 						context.conversationId,
 					),
@@ -1119,9 +1130,10 @@ export class AgenticRouter {
 	private _createValidationCorrection(
 		plan: AgenticToolCallPlan,
 		context: AgenticToolExecutionContext,
+		schema: ZodTypeAny,
 		error: ZodError,
 	): AgenticPendingCorrection {
-		const fields = this._extractCorrectionFields(error);
+		const fields = this._extractCorrectionFields(error, schema);
 
 		return {
 			reason: "validation-required",
@@ -1163,16 +1175,34 @@ export class AgenticRouter {
 
 	private _extractCorrectionFields(
 		error: ZodError,
+		schema: ZodTypeAny,
 	): AgenticPendingCorrectionField[] {
 		const dedupedFields = new Map<string, AgenticPendingCorrectionField>();
 
 		for (const issue of error.issues) {
 			const fieldName = issue.path.length > 0 ? issue.path.join(".") : "input";
+			const enumValues = extractIssueEnumValues(issue);
+			const valueType = extractCorrectionValueType(schema, issue.path);
+			const existingField = dedupedFields.get(fieldName);
 
-			if (!dedupedFields.has(fieldName)) {
+			if (!existingField) {
 				dedupedFields.set(fieldName, {
 					name: fieldName,
 					message: issue.message,
+					...(enumValues ? { enumValues } : {}),
+					...(valueType ? { valueType } : {}),
+				});
+				continue;
+			}
+
+			if (
+				(!existingField.enumValues && enumValues) ||
+				!existingField.valueType
+			) {
+				dedupedFields.set(fieldName, {
+					...existingField,
+					...(existingField.enumValues || !enumValues ? {} : { enumValues }),
+					...(existingField.valueType || !valueType ? {} : { valueType }),
 				});
 			}
 		}
@@ -1317,12 +1347,7 @@ export class AgenticRouter {
 			pendingCorrection.reason === "validation-required"
 				? pendingCorrection.fields
 						.map((field) => {
-							return [
-								'    <label class="agentic-correction-field">',
-								`      <span>${escapeHtml(field.name)}</span>`,
-								`      <input type="text" name="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.message)}" />`,
-								"    </label>",
-							].join("\n");
+							return renderCorrectionFieldHtml(field);
 						})
 						.join("\n")
 				: "";
@@ -1356,6 +1381,162 @@ export class AgenticRouter {
 			.filter(Boolean)
 			.join("\n");
 	}
+}
+
+function extractIssueEnumValues(
+	issue: ZodError["issues"][number],
+): string[] | undefined {
+	const candidate = issue as ZodError["issues"][number] & {
+		values?: unknown;
+	};
+
+	if (!Array.isArray(candidate.values)) {
+		return undefined;
+	}
+
+	const enumValues = candidate.values.filter((value): value is string => {
+		return typeof value === "string";
+	});
+
+	if (enumValues.length === 0) {
+		return undefined;
+	}
+
+	return [...new Set(enumValues)];
+}
+
+function renderCorrectionFieldHtml(
+	field: AgenticPendingCorrectionField,
+): string {
+	if (field.enumValues?.length) {
+		return [
+			'    <label class="agentic-correction-field">',
+			`      <span>${escapeHtml(field.name)}</span>`,
+			`      <select name="${escapeHtml(field.name)}">`,
+			'        <option value="">Select an option</option>',
+			...field.enumValues.map((value) => {
+				return `        <option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
+			}),
+			"      </select>",
+			"    </label>",
+		].join("\n");
+	}
+
+	const inputType = field.valueType === "number" ? "number" : "text";
+	const extraAttributes =
+		field.valueType === "number" ? ' inputmode="decimal" step="any"' : "";
+
+	return [
+		'    <label class="agentic-correction-field">',
+		`      <span>${escapeHtml(field.name)}</span>`,
+		`      <input type="${inputType}" name="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.message)}"${extraAttributes} />`,
+		"    </label>",
+	].join("\n");
+}
+
+function normalizeCorrectionValues(
+	values: Record<string, unknown> | undefined,
+	fields: readonly AgenticPendingCorrectionField[],
+): Record<string, unknown> {
+	if (!values) {
+		return {};
+	}
+
+	const fieldsByName = new Map(fields.map((field) => [field.name, field]));
+
+	return Object.fromEntries(
+		Object.entries(values).map(([key, value]) => {
+			return [key, coerceCorrectionValue(value, fieldsByName.get(key))];
+		}),
+	);
+}
+
+function coerceCorrectionValue(
+	value: unknown,
+	field?: AgenticPendingCorrectionField,
+): unknown {
+	if (field?.valueType === "number" && typeof value === "string") {
+		const trimmed = value.trim();
+
+		if (!trimmed) {
+			return value;
+		}
+
+		const parsed = Number(trimmed);
+		if (Number.isFinite(parsed)) {
+			return parsed;
+		}
+	}
+
+	return value;
+}
+
+function extractCorrectionValueType(
+	schema: ZodTypeAny,
+	path: readonly PropertyKey[],
+): AgenticPendingCorrectionField["valueType"] | undefined {
+	const resolvedSchema = resolveCorrectionFieldSchema(schema, path);
+
+	if (!resolvedSchema) {
+		return undefined;
+	}
+
+	return resolvedSchema instanceof z.ZodNumber ? "number" : undefined;
+}
+
+function resolveCorrectionFieldSchema(
+	schema: ZodTypeAny,
+	path: readonly PropertyKey[],
+): ZodTypeAny | undefined {
+	let current: ZodTypeAny | undefined = unwrapCorrectionSchema(schema);
+
+	for (const segment of path) {
+		current = current ? unwrapCorrectionSchema(current) : undefined;
+
+		if (!current) {
+			return undefined;
+		}
+
+		if (typeof segment === "number") {
+			if (current instanceof z.ZodArray) {
+				current = unwrapCorrectionSchema(
+					(current as unknown as { element?: ZodTypeAny }).element ??
+						z.unknown(),
+				);
+				continue;
+			}
+
+			return undefined;
+		}
+
+		if (current instanceof z.ZodObject) {
+			const shape = current.shape as Record<string, ZodTypeAny>;
+			const next: ZodTypeAny | undefined = shape[String(segment)];
+			current = next;
+			continue;
+		}
+
+		return undefined;
+	}
+
+	return current ? unwrapCorrectionSchema(current) : undefined;
+}
+
+function unwrapCorrectionSchema(schema: ZodTypeAny): ZodTypeAny {
+	const candidate = schema as ZodTypeAny & {
+		unwrap?: () => ZodTypeAny;
+		removeDefault?: () => ZodTypeAny;
+	};
+
+	if (typeof candidate.removeDefault === "function") {
+		return unwrapCorrectionSchema(candidate.removeDefault());
+	}
+
+	if (typeof candidate.unwrap === "function") {
+		return unwrapCorrectionSchema(candidate.unwrap());
+	}
+
+	return schema;
 }
 
 /**

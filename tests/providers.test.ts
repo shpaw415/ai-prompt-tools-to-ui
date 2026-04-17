@@ -8,7 +8,7 @@ import {
 	type AgenticLLMRenderRequest,
 	z,
 } from "../index";
-import { buildPlanPrompt } from "../provider/shared";
+import { buildNativePlanPrompt, buildPlanPrompt } from "../provider/shared";
 
 describe("vendor providers", () => {
 	/**
@@ -39,6 +39,47 @@ describe("vendor providers", () => {
 		expect(prompt).toContain("Do not invent missing required tool arguments.");
 		expect(prompt).toContain(
 			"select the tool anyway and omit the unknown fields",
+		);
+	});
+
+	/**
+	 * Covers stronger native-tool planning guidance for mutation requests.
+	 *
+	 * This is useful because providers with native tool calling can otherwise skip
+	 * the tool call and improvise their own HTML form instead of letting the router
+	 * pause with structured correction metadata.
+	 */
+	it("forbids hand-written forms in native planning prompts for missing arguments", () => {
+		const prompt = buildNativePlanPrompt({
+			phase: "plan",
+			prompt: "create a new employee",
+			outputFormat: "html",
+			systemInstruction:
+				"For employee mutations, use tools and rely on correction flow for missing fields.",
+			tools: [
+				{
+					name: "add_employee",
+					description: "Add a new employee.",
+					schema: z.object({
+						name: z.string().min(2),
+						role: z.string().min(2),
+						department: z.string().min(2),
+						salary: z.number().positive(),
+					}),
+				},
+			],
+			toolResults: [],
+			maxToolCalls: 2,
+		} satisfies AgenticLLMPlanRequest);
+
+		expect(prompt).toContain(
+			"Planning is not the render phase. Do not answer with HTML, prose, or a client-side form.",
+		);
+		expect(prompt).toContain(
+			"do not replace a missing-argument tool call with a hand-written form.",
+		);
+		expect(prompt).toContain(
+			"If the user wants to create, update, remove, or otherwise mutate backend data, emit the relevant tool call even when some required arguments are still missing.",
 		);
 	});
 
@@ -223,6 +264,20 @@ describe("vendor providers", () => {
 				],
 			},
 		]);
+		expect(capturedBody?.toolConfig).toEqual({
+			functionCallingConfig: {
+				mode: "AUTO",
+			},
+		});
+		expect(
+			(
+				capturedBody?.tools as Array<{
+					functionDeclarations?: Array<{
+						parameters?: Record<string, unknown>;
+					}>;
+				}>
+			)?.[0]?.functionDeclarations?.[0]?.parameters,
+		).not.toHaveProperty("additionalProperties");
 		expect(response).toEqual({
 			phase: "plan",
 			toolCalls: [

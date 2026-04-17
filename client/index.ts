@@ -612,8 +612,12 @@ function cloneState(state: AgenticFlowState): AgenticFlowState {
 }
 
 function resolveTransportUrl(baseUrl: string, path: string): string {
-	if (/^https?:\/\//.test(path)) {
+	if (isAbsoluteUrl(path)) {
 		return path;
+	}
+
+	if (!isAbsoluteUrl(baseUrl)) {
+		return joinRelativeTransportUrl(baseUrl, path);
 	}
 
 	return new URL(path, ensureTrailingSlash(baseUrl)).toString();
@@ -621,6 +625,19 @@ function resolveTransportUrl(baseUrl: string, path: string): string {
 
 function ensureTrailingSlash(value: string): string {
 	return value.endsWith("/") ? value : `${value}/`;
+}
+
+function isAbsoluteUrl(value: string): boolean {
+	return /^[a-z][a-z\d+\-.]*:\/\//i.test(value);
+}
+
+function joinRelativeTransportUrl(baseUrl: string, path: string): string {
+	if (path.startsWith("/")) {
+		return path;
+	}
+
+	const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+	return `${normalizedBase}/${path}`;
 }
 
 function mergeHeaders(
