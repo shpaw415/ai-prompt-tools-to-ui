@@ -43,6 +43,40 @@ const response = await router.runAndRender(
 console.log(response.content);
 ```
 
+## Deterministic Rendering
+
+For large or predictable result sets, you can bypass the LLM render phase with
+`renderResolver`. This is useful for dashboards, long tables, or collection
+views where sending the full tool payload back into the model would waste tokens
+or create unstable layouts.
+
+Return a normal render payload when your typed renderer wants to handle the
+output, or return `undefined` to fall back to the configured provider.
+
+```typescript
+import { AgenticRouter, type AgenticLLMRenderRequest, z } from "ai-prompt-tools-to-ui";
+
+const router = new AgenticRouter({
+  outputFormat: "html",
+  renderResolver: async (request: AgenticLLMRenderRequest) => {
+    const lastResult = request.toolResults.at(-1);
+
+    if (lastResult?.toolName !== "list_employees") {
+      return undefined;
+    }
+
+    return {
+      phase: "render",
+      content: `<section><h1>Employees</h1><pre>${JSON.stringify(lastResult.result, null, 2)}</pre></section>`,
+    };
+  },
+});
+```
+
+The resolver runs before the provider render call in both `runAndRender()` and
+`runAndRenderStream()`. When it handles a stream response, the router emits a
+single render chunk followed by `done`.
+
 ## Conversation History
 
 The router can persist prior turns through a pluggable history provider. History

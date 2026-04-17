@@ -88,6 +88,7 @@ interface ResolvedAgenticRouterOptions {
 	outputFormat: AgenticOutputFormat;
 	renderStyle?: AgenticRenderStyle;
 	renderStyleInstruction?: string;
+	renderResolver?: AgenticRenderResolver;
 	historyProvider?: AgenticConversationHistoryProvider;
 	enableInteractiveCorrections: boolean;
 	interactiveCorrectionForm?: AgenticInteractiveCorrectionFormOptions;
@@ -176,6 +177,15 @@ export type AgenticLLMProviderRequest =
 export type AgenticLLMProviderResponse =
 	| AgenticLLMPlanResponse
 	| AgenticLLMRenderResponse;
+
+/**
+ * Optional deterministic render hook that can bypass the provider render phase.
+ *
+ * Return `undefined` to fall back to the configured LLM provider.
+ */
+export type AgenticRenderResolver = (
+	request: AgenticLLMRenderRequest,
+) => Awaitable<AgenticLLMRenderResponse | undefined>;
 
 /**
  * Stream events yielded by {@link AgenticRouter.runAndRenderStream}.
@@ -288,6 +298,13 @@ export interface AgenticRouterOptions {
 	 * component density, or a restricted class naming scheme.
 	 */
 	renderStyleInstruction?: string;
+	/**
+	 * Optional deterministic render hook executed before the provider render call.
+	 *
+	 * This is useful for predictable or large result sets that should be rendered
+	 * from typed templates instead of consuming extra LLM tokens.
+	 */
+	renderResolver?: AgenticRenderResolver;
 	/**
 	 * Optional provider used to persist conversation history between runs.
 	 */
@@ -520,17 +537,14 @@ export class AgenticRouter {
 			return resolution.response;
 		}
 
-		const rendered = await this._callLLM({
-			phase: "render",
-			prompt: resolution.effectivePrompt,
-			systemInstruction: resolution.effectiveSystemInstruction,
-			outputFormat: this.options.outputFormat,
-			renderStyle: this.options.renderStyle,
-			renderStyleInstruction: this.options.renderStyleInstruction,
-			conversationHistory,
-			tools: this._getProviderTools(),
-			toolResults: resolution.toolResults,
-		});
+		const rendered = await this._resolveRender(
+			this._createRenderRequest(
+				resolution.effectivePrompt,
+				resolution.effectiveSystemInstruction,
+				conversationHistory,
+				resolution.toolResults,
+			),
+		);
 
 		const response = {
 			status: "completed" as const,
@@ -594,31 +608,45 @@ export class AgenticRouter {
 			return resolution.response;
 		}
 
-		const renderRequest: AgenticLLMRenderRequest = {
-			phase: "render",
-			prompt: resolution.effectivePrompt,
-			systemInstruction: resolution.effectiveSystemInstruction,
-			outputFormat: this.options.outputFormat,
-			renderStyle: this.options.renderStyle,
-			renderStyleInstruction: this.options.renderStyleInstruction,
+		const renderRequest = this._createRenderRequest(
+			resolution.effectivePrompt,
+			resolution.effectiveSystemInstruction,
 			conversationHistory,
-			tools: this._getProviderTools(),
-			toolResults: resolution.toolResults,
-		};
+			resolution.toolResults,
+		);
+		const resolvedRender = await this.options.renderResolver?.(renderRequest);
 		let content = "";
 
-		for await (const chunk of this._streamLLM(renderRequest)) {
-			content = chunk.content;
-
-			if (!chunk.delta) {
-				continue;
+		if (resolvedRender) {
+			if (resolvedRender.phase !== renderRequest.phase) {
+				throw new Error(
+					`Render resolver returned a ${resolvedRender.phase} response for a ${renderRequest.phase} request.`,
+				);
 			}
 
-			yield {
-				type: "render",
-				delta: chunk.delta,
-				content: chunk.content,
-			};
+			content = resolvedRender.content;
+
+			if (content) {
+				yield {
+					type: "render",
+					delta: content,
+					content,
+				};
+			}
+		} else {
+			for await (const chunk of this._streamLLM(renderRequest)) {
+				content = chunk.content;
+
+				if (!chunk.delta) {
+					continue;
+				}
+
+				yield {
+					type: "render",
+					delta: chunk.delta,
+					content: chunk.content,
+				};
+			}
 		}
 
 		const response: AgenticRouterResponse = {
@@ -709,6 +737,58 @@ export class AgenticRouter {
 		}
 
 		return response;
+	}
+
+	private _createRenderRequest(
+		prompt: string,
+		systemInstruction: string | undefined,
+		conversationHistory: readonly AgenticConversationMessage[] | undefined,
+		toolResults: readonly AgenticToolExecutionResult[],
+	): AgenticLLMRenderRequest {
+		return {
+			phase: "render",
+			prompt,
+			systemInstruction,
+			outputFormat: this.options.outputFormat,
+			renderStyle: this.options.renderStyle,
+			renderStyleInstruction: this.options.renderStyleInstruction,
+			conversationHistory,
+			tools: this._getProviderTools(),
+			toolResults,
+		};
+	}
+
+	private async _resolveRender(
+		request: AgenticLLMRenderRequest,
+	): Promise<AgenticLLMRenderResponse> {
+		return (await this._resolveRenderWithSource(request)).response;
+	}
+
+	private async _resolveRenderWithSource(
+		request: AgenticLLMRenderRequest,
+	): Promise<{
+		response: AgenticLLMRenderResponse;
+		source: "resolver" | "provider";
+	}> {
+		const resolved = await this.options.renderResolver?.(request);
+
+		if (resolved) {
+			if (resolved.phase !== request.phase) {
+				throw new Error(
+					`Render resolver returned a ${resolved.phase} response for a ${request.phase} request.`,
+				);
+			}
+
+			return {
+				response: resolved,
+				source: "resolver",
+			};
+		}
+
+		return {
+			response: await this._callLLM(request),
+			source: "provider",
+		};
 	}
 
 	/**

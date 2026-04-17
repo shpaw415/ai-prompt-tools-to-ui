@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import {
 	AgenticRouter,
+	type AgenticRenderResolver,
+	type AgenticLLMRenderRequest,
+	type AgenticLLMRenderResponse,
 	createBunSQLiteHistoryProvider,
-	createGitHubCopilotProvider,
 	createGeminiProvider,
-	createMockLLMProvider,
 	z,
 } from "../";
 
@@ -29,6 +30,7 @@ export const SHOWCASE_SAMPLE_PROMPTS = [
 	"Increase Karim Diallo salary by 3500 and explain the delta versus the team average.",
 	"Remove Mina Rossi and summarize the payroll impact.",
 ];
+export const DEFAULT_SHOWCASE_TEMPLATE_EMPLOYEE_THRESHOLD = 8;
 
 export interface ShowcaseOverview {
 	conversationId: string;
@@ -79,7 +81,7 @@ export function createShowcaseRuntime(
 
 	const provider = createGeminiProvider({
 		apiKey: process.env.GEMINI_API_KEY?.trim() as string,
-		model: "gemini-2.5-flash",
+		model: process.env.MODEL?.trim() as string,
 	});
 	/*
 	apiKey
@@ -109,6 +111,7 @@ export function createShowcaseRuntime(
 		renderStyle: "inline-css",
 		renderStyleInstruction:
 			"Return a polished HR dashboard with clean cards, salary highlights, compact tables, and clear action summaries.",
+		renderResolver: createShowcaseRenderResolver(),
 		historyProvider,
 		provider,
 	});
@@ -430,4 +433,212 @@ function toSalaryCents(value: number): number {
 
 function fromSalaryCents(value: number): number {
 	return Number((value / 100).toFixed(2));
+}
+
+export function createShowcaseRenderResolver(
+	options: { employeeCountThreshold?: number } = {},
+): AgenticRenderResolver {
+	const employeeCountThreshold =
+		options.employeeCountThreshold ??
+		DEFAULT_SHOWCASE_TEMPLATE_EMPLOYEE_THRESHOLD;
+
+	return function renderShowcaseTemplateResponse(
+		request: AgenticLLMRenderRequest,
+	): AgenticLLMRenderResponse | undefined {
+		if (request.outputFormat !== "html") {
+			return undefined;
+		}
+
+		if (!request.toolResults.every(isShowcaseRenderableToolResult)) {
+			return undefined;
+		}
+
+		const listResult = [...request.toolResults]
+			.reverse()
+			.find((result) => result.toolName === "list_employees");
+
+		if (!listResult || !isRecord(listResult.result)) {
+			return undefined;
+		}
+
+		const employees = Array.isArray(listResult.result.employees)
+			? listResult.result.employees.filter(isRecord)
+			: undefined;
+		const summary = isRecord(listResult.result.summary)
+			? listResult.result.summary
+			: undefined;
+
+		if (!employees || !summary) {
+			return undefined;
+		}
+
+		const actions = request.toolResults.filter(
+			(result) => result.toolName !== "list_employees",
+		);
+		const shouldRenderTemplate =
+			actions.length > 0 || employees.length >= employeeCountThreshold;
+
+		if (!shouldRenderTemplate) {
+			return undefined;
+		}
+
+		return {
+			phase: "render",
+			content: renderShowcaseDashboardHtml({
+				prompt: request.prompt,
+				employees,
+				summary,
+				actions: actions.map((result) => renderShowcaseAction(result)),
+			}),
+		};
+	};
+}
+
+function isShowcaseRenderableToolResult(result: { toolName: string }): boolean {
+	return [
+		"list_employees",
+		"add_employee",
+		"remove_employee",
+		"adjust_employee_salary",
+	].includes(result.toolName);
+}
+
+function renderShowcaseDashboardHtml(input: {
+	prompt: string;
+	employees: Array<Record<string, unknown>>;
+	summary: Record<string, unknown>;
+	actions: string[];
+}): string {
+	const cards = input.employees
+		.map((employee) => {
+			return [
+				'<article style="padding:16px; border:1px solid #d6d3d1; border-radius:16px; background:#fffaf5; display:grid; gap:8px;">',
+				`<h3 style="margin:0; font-size:18px;">${escapeHtml(String(employee.name ?? "Unknown"))}</h3>`,
+				`<div style="display:flex; justify-content:space-between; gap:12px; color:#44403c;"><span>${escapeHtml(String(employee.role ?? "Unknown"))}</span><strong>${escapeHtml(formatCurrencyValue(employee.salary))}</strong></div>`,
+				`<div style="color:#78716c; font-size:14px;">${escapeHtml(String(employee.department ?? "Unassigned"))}</div>`,
+				"</article>",
+			].join("");
+		})
+		.join("");
+
+	const rows = input.employees.length
+		? input.employees
+				.map((employee) => {
+					return [
+						"<tr>",
+						`<td style="padding:12px 14px; border-top:1px solid #e7e5e4;">${escapeHtml(String(employee.name ?? "Unknown"))}</td>`,
+						`<td style="padding:12px 14px; border-top:1px solid #e7e5e4;">${escapeHtml(String(employee.role ?? "Unknown"))}</td>`,
+						`<td style="padding:12px 14px; border-top:1px solid #e7e5e4;">${escapeHtml(String(employee.department ?? "Unassigned"))}</td>`,
+						`<td style="padding:12px 14px; border-top:1px solid #e7e5e4;">${escapeHtml(formatCurrencyValue(employee.salary))}</td>`,
+						"</tr>",
+					].join("");
+				})
+				.join("")
+		: '<tr><td colspan="4" style="padding:12px 14px; border-top:1px solid #e7e5e4;">No employees found.</td></tr>';
+
+	const highestSalary = isRecord(input.summary.highestSalary)
+		? `${String(input.summary.highestSalary.name ?? "Unknown")} · ${formatCurrencyValue(input.summary.highestSalary.salary)}`
+		: "N/A";
+
+	const metrics = [
+		["Headcount", String(input.summary.headcount ?? input.employees.length)],
+		["Total payroll", formatCurrencyValue(input.summary.totalPayroll)],
+		["Average salary", formatCurrencyValue(input.summary.averageSalary)],
+		["Highest salary", highestSalary],
+	]
+		.map(([label, value]) => {
+			return [
+				'<article style="padding:18px; border-radius:18px; background:#111827; color:#f9fafb; display:grid; gap:6px;">',
+				`<div style="font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:#cbd5e1;">${escapeHtml(String(label))}</div>`,
+				`<strong style="font-size:22px; line-height:1.2;">${escapeHtml(String(value))}</strong>`,
+				"</article>",
+			].join("");
+		})
+		.join("");
+
+	const actionSection = input.actions.length
+		? `<section style="display:grid; gap:8px;"><h2 style="margin:0; font-size:18px;">Recent actions</h2><ul style="margin:0; padding-left:20px; color:#44403c;">${input.actions.map((action) => `<li>${action}</li>`).join("")}</ul></section>`
+		: "";
+
+	return [
+		'<article class="agentic-ui" style="display:grid; gap:24px; padding:24px; color:#1c1917; background:linear-gradient(180deg, #fff7ed 0%, #ffffff 100%); font-family: Georgia, serif;">',
+		'<header style="display:grid; gap:10px;">',
+		'<div style="font-size:12px; letter-spacing:0.12em; text-transform:uppercase; color:#9a3412;">HR dashboard</div>',
+		`<h1 style="margin:0; font-size:32px; line-height:1.1;">${escapeHtml(input.prompt)}</h1>`,
+		'<p style="margin:0; color:#57534e;">Rendered directly from tool results to avoid sending large employee collections back through the LLM render step.</p>',
+		"</header>",
+		`<section style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px;">${metrics}</section>`,
+		actionSection,
+		'<section style="display:grid; gap:16px;">',
+		'<h2 style="margin:0; font-size:20px;">Employee roster</h2>',
+		`<div style="display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));">${cards}</div>`,
+		'<div style="overflow:auto; border:1px solid #e7e5e4; border-radius:18px; background:#ffffff;">',
+		'<table style="width:100%; border-collapse:collapse; min-width:560px;">',
+		'<thead><tr style="background:#f5f5f4; text-align:left;"><th style="padding:12px 14px;">Name</th><th style="padding:12px 14px;">Role</th><th style="padding:12px 14px;">Department</th><th style="padding:12px 14px;">Salary</th></tr></thead>',
+		`<tbody>${rows}</tbody>`,
+		"</table>",
+		"</div>",
+		"</section>",
+		"</article>",
+	]
+		.filter(Boolean)
+		.join("");
+}
+
+function renderShowcaseAction(result: {
+	toolName: string;
+	result: unknown;
+}): string {
+	if (!isRecord(result.result)) {
+		return escapeHtml(`Completed ${result.toolName}.`);
+	}
+
+	if (result.toolName === "add_employee" && isRecord(result.result.employee)) {
+		return escapeHtml(
+			`Added ${String(result.result.employee.name ?? "employee")} to ${String(result.result.employee.department ?? "the team")}.`,
+		);
+	}
+
+	if (
+		result.toolName === "remove_employee" &&
+		isRecord(result.result.employee)
+	) {
+		return escapeHtml(
+			`Removed ${String(result.result.employee.name ?? "employee")} from the roster.`,
+		);
+	}
+
+	if (
+		result.toolName === "adjust_employee_salary" &&
+		isRecord(result.result.after)
+	) {
+		return escapeHtml(
+			`Updated ${String(result.result.after.name ?? "employee")} salary to ${formatCurrencyValue(result.result.after.salary)}.`,
+		);
+	}
+
+	return escapeHtml(`Completed ${result.toolName}.`);
+}
+
+function formatCurrencyValue(value: unknown): string {
+	const numericValue = typeof value === "number" ? value : Number(value ?? 0);
+
+	return new Intl.NumberFormat("en-US", {
+		style: "currency",
+		currency: "USD",
+		maximumFractionDigits: 2,
+	}).format(Number.isFinite(numericValue) ? numericValue : 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function escapeHtml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
 }

@@ -343,6 +343,116 @@ describe("AgenticRouter", () => {
 	});
 
 	/**
+	 * Covers deterministic rendering before the provider render phase.
+	 *
+	 * This is useful because large or predictable result sets should be able to
+	 * skip the LLM render step entirely when a typed renderer is available.
+	 */
+	it("uses the render resolver before calling the provider render phase", async () => {
+		const phases: string[] = [];
+		let observedResolverRequest:
+			| {
+					outputFormat: string;
+					renderStyle?: string;
+					toolResultsLength: number;
+			  }
+			| undefined;
+
+		const provider: AgenticLLMProvider = {
+			name: "resolver-provider",
+			model: "resolver-v1",
+			request: async (request) => {
+				phases.push(request.phase);
+
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "lookup_weather",
+								rationale: "Weather data is required.",
+								arguments: { city: "Paris" },
+							},
+						],
+					};
+				}
+
+				throw new Error("Provider render should not be called.");
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			outputFormat: "html",
+			renderStyle: "inline-css",
+			renderResolver: async (request) => {
+				observedResolverRequest = {
+					outputFormat: request.outputFormat,
+					renderStyle: request.renderStyle,
+					toolResultsLength: request.toolResults.length,
+				};
+
+				return {
+					phase: "render",
+					content: `<section>Resolver handled ${request.toolResults[0]?.toolName}</section>`,
+				};
+			},
+		});
+
+		router.registerTool(
+			"lookup_weather",
+			"Look up current weather for a city.",
+			z.object({ city: z.string().min(2) }),
+			async ({ city }) => ({ city, temperature: 21 }),
+		);
+
+		const response = await router.runAndRender("Weather in Paris");
+
+		expect(phases).toEqual(["plan", "plan"]);
+		expect(observedResolverRequest).toEqual({
+			outputFormat: "html",
+			renderStyle: "inline-css",
+			toolResultsLength: 1,
+		});
+		expect(response.content).toContain("Resolver handled lookup_weather");
+	});
+
+	/**
+	 * Covers fallback behavior when the deterministic renderer declines.
+	 */
+	it("falls back to the provider render phase when the render resolver declines", async () => {
+		const phases: string[] = [];
+
+		const provider: AgenticLLMProvider = {
+			name: "resolver-fallback-provider",
+			model: "resolver-fallback-v1",
+			request: async (request) => {
+				phases.push(request.phase);
+
+				if (request.phase === "plan") {
+					return { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: "Provider fallback content",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			outputFormat: "markdown",
+			renderResolver: async () => undefined,
+		});
+
+		const response = await router.runAndRender("plain summary");
+
+		expect(phases).toEqual(["plan", "render"]);
+		expect(response.content).toBe("Provider fallback content");
+	});
+
+	/**
 	 * Covers persistence timing for the streaming API.
 	 *
 	 * This is useful because the router should not write a conversation turn until
@@ -476,6 +586,70 @@ describe("AgenticRouter", () => {
 				content: "Hello Paris",
 			},
 		});
+	});
+
+	/**
+	 * Covers streaming behavior when the render resolver handles the final output.
+	 */
+	it("emits a single render chunk when the render resolver handles streaming output", async () => {
+		const phases: string[] = [];
+		let streamCalled = false;
+		const provider: AgenticLLMProvider = {
+			name: "resolver-stream-provider",
+			model: "resolver-stream-v1",
+			request: async (request) => {
+				phases.push(request.phase);
+
+				if (request.phase === "plan") {
+					return { phase: "plan", toolCalls: [] };
+				}
+
+				throw new Error(
+					"Provider render should not be called during resolver streaming.",
+				);
+			},
+			stream: async function* () {
+				streamCalled = true;
+				yield {
+					phase: "render",
+					delta: "unused",
+					content: "unused",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			outputFormat: "html",
+			useStreaming: true,
+			renderResolver: async () => ({
+				phase: "render",
+				content: "<div>Deterministic dashboard</div>",
+			}),
+		});
+
+		const events = [];
+		for await (const event of router.runAndRenderStream(
+			"stream typed output",
+		)) {
+			events.push(event);
+		}
+
+		expect(phases).toEqual(["plan"]);
+		expect(streamCalled).toBe(false);
+		expect(events).toMatchObject([
+			{
+				type: "render",
+				delta: "<div>Deterministic dashboard</div>",
+				content: "<div>Deterministic dashboard</div>",
+			},
+			{
+				type: "done",
+				response: {
+					content: "<div>Deterministic dashboard</div>",
+				},
+			},
+		]);
 	});
 
 	/**
