@@ -7,6 +7,10 @@
 	"module": "./index.ts",
 	"exports": {
 		".": "./index.ts",
+		"./history/bun-sqlite": "./history/bun-sqlite.ts",
+		"./history/cloudflare-d1": "./history/cloudflare-d1.ts",
+		"./history/cloudflare-kv": "./history/cloudflare-kv.ts",
+		"./history/in-memory": "./history/in-memory.ts",
 		"./provider/openai": "./provider/openai.ts",
 		"./provider/google": "./provider/google.ts",
 		"./provider/anthropic": "./provider/anthropic.ts",
@@ -18,7 +22,6 @@
 		"zod": "^4.3.6"
 	},
 	"peerDependencies": {
-		"frame-master": "^3.1.1",
 		"typescript": "^5"
 	},
 	"private": false,

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { type AgenticLLMProvider, AgenticRouter, z } from "../index";
+import {
+	createInMemoryHistoryProvider,
+	type AgenticLLMProvider,
+	AgenticRouter,
+	z,
+} from "../index";
 
 describe("AgenticRouter", () => {
 	/**
@@ -160,6 +165,127 @@ describe("AgenticRouter", () => {
 	});
 
 	/**
+	 * Covers persisted conversation history across multiple router runs.
+	 *
+	 * This is useful because follow-up prompts must be able to reference the prior
+	 * conversation without replaying the full state manually on every call.
+	 */
+	it("persists conversation history between runs when a history provider is configured", async () => {
+		const historyProvider = createInMemoryHistoryProvider();
+		const observedHistoryLengths: number[] = [];
+		const provider: AgenticLLMProvider = {
+			name: "history-aware-provider",
+			model: "history-v1",
+			request: async (request) => {
+				observedHistoryLengths.push(request.conversationHistory?.length ?? 0);
+
+				if (request.phase === "plan") {
+					return { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content:
+						request.conversationHistory?.length === 0
+							? "No prior history"
+							: `History length ${request.conversationHistory?.length}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			historyProvider,
+			outputFormat: "markdown",
+		});
+
+		const firstResponse = await router.runAndRender(
+			"show the current employees",
+			undefined,
+			{ conversationId: "hr-team" },
+		);
+		const secondResponse = await router.runAndRender(
+			"increase Karim salary by 1000 more",
+			undefined,
+			{ conversationId: "hr-team" },
+		);
+		const storedHistory = await historyProvider.get("hr-team");
+
+		expect(firstResponse.content).toBe("No prior history");
+		expect(secondResponse.content).toBe("History length 2");
+		expect(observedHistoryLengths).toEqual([0, 0, 2, 2]);
+		expect(storedHistory).toHaveLength(4);
+		expect(storedHistory.map((message) => message.role)).toEqual([
+			"user",
+			"assistant",
+			"user",
+			"assistant",
+		]);
+		expect(storedHistory[0]?.content).toBe("show the current employees");
+		expect(storedHistory[2]?.content).toBe(
+			"increase Karim salary by 1000 more",
+		);
+	});
+
+	/**
+	 * Covers history window trimming before each provider call.
+	 *
+	 * This is useful because persisted history can grow without bound, and the
+	 * router needs a predictable way to keep prompts within a manageable size.
+	 */
+	it("trims persisted history to the configured window size", async () => {
+		const historyProvider = createInMemoryHistoryProvider();
+		const observedHistorySnapshots: string[][] = [];
+		const provider: AgenticLLMProvider = {
+			name: "trim-history-provider",
+			model: "history-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return { phase: "plan", toolCalls: [] };
+				}
+
+				observedHistorySnapshots.push(
+					(request.conversationHistory ?? []).map((message) => message.content),
+				);
+
+				return {
+					phase: "render",
+					content: "ok",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			historyProvider,
+			outputFormat: "markdown",
+			historyWindowSize: 2,
+		});
+
+		await router.runAndRender("first prompt", undefined, {
+			conversationId: "trimmed-thread",
+		});
+		await router.runAndRender("second prompt", undefined, {
+			conversationId: "trimmed-thread",
+		});
+		await router.runAndRender("third prompt", undefined, {
+			conversationId: "trimmed-thread",
+		});
+
+		expect(observedHistorySnapshots).toEqual([
+			[],
+			[
+				"first prompt",
+				"Delivered a markdown response without calling any tool.",
+			],
+			[
+				"second prompt",
+				"Delivered a markdown response without calling any tool.",
+			],
+		]);
+	});
+
+	/**
 	 * Covers the explicit render styling contract passed from the router to the
 	 * provider during the render phase.
 	 *
@@ -214,6 +340,61 @@ describe("AgenticRouter", () => {
 				"Prefer compact cards, strong headings, and subtle borders.",
 			outputFormat: "html",
 		});
+	});
+
+	/**
+	 * Covers persistence timing for the streaming API.
+	 *
+	 * This is useful because the router should not write a conversation turn until
+	 * the final render has completed, otherwise partially streamed outputs could be
+	 * persisted as if they were finished responses.
+	 */
+	it("saves streamed conversation history only after the final response is complete", async () => {
+		const historyProvider = createInMemoryHistoryProvider();
+		const provider: AgenticLLMProvider = {
+			name: "history-stream-provider",
+			model: "history-stream-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return { phase: "plan", toolCalls: [] };
+				}
+
+				return { phase: "render", content: "unused fallback" };
+			},
+			stream: async function* () {
+				yield { phase: "render", delta: "Hello ", content: "Hello " };
+				yield { phase: "render", delta: "team", content: "Hello team" };
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			historyProvider,
+			outputFormat: "markdown",
+			useStreaming: true,
+		});
+
+		const observedStoredLengths: number[] = [];
+		for await (const event of router.runAndRenderStream(
+			"show the current payroll",
+			undefined,
+			{ conversationId: "stream-thread" },
+		)) {
+			if (event.type === "render") {
+				observedStoredLengths.push(
+					(await historyProvider.get("stream-thread")).length,
+				);
+			}
+		}
+
+		const storedHistory = await historyProvider.get("stream-thread");
+
+		expect(observedStoredLengths).toEqual([0, 0]);
+		expect(storedHistory).toHaveLength(2);
+		expect(storedHistory[0]?.content).toBe("show the current payroll");
+		expect(storedHistory[1]?.content).toContain(
+			"Delivered a markdown response without calling any tool.",
+		);
 	});
 
 	/**
@@ -387,6 +568,421 @@ describe("AgenticRouter", () => {
 		expect(response.content).toContain("&lt;b&gt;Alice&lt;/b&gt;");
 		expect(response.content).toContain("&lt;script&gt;");
 		expect(response.content).not.toContain("<script>");
+	});
+
+	/**
+	 * Covers the interactive correction flow for missing tool arguments.
+	 *
+	 * This is useful because the planner may identify the right tool before it has
+	 * every required field, and the router must pause instead of guessing values.
+	 */
+	it("pauses and asks for missing tool inputs when interactive corrections are enabled", async () => {
+		let handlerCalls = 0;
+		const provider: AgenticLLMProvider = {
+			name: "interactive-correction-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return request.toolResults.length === 0
+						? {
+								phase: "plan",
+								toolCalls: [
+									{
+										toolName: "create_user",
+										rationale: "A user creation tool is required.",
+										arguments: { role: "admin" },
+									},
+								],
+							}
+						: { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: `Created UI ${JSON.stringify(request.toolResults[0]?.result)}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => {
+				handlerCalls += 1;
+				return input;
+			},
+		);
+
+		const response = await router.runAndRender("Create a new admin user");
+
+		expect(response.status).toBe("needs-user-input");
+		expect(response.pendingCorrection?.reason).toBe("validation-required");
+		expect(response.pendingCorrection?.fields).toEqual([
+			{
+				name: "name",
+				message: expect.any(String),
+			},
+		]);
+		expect(response.content).toContain("Additional Input Required");
+		expect(handlerCalls).toBe(0);
+	});
+
+	/**
+	 * Covers resuming a paused tool execution after the caller provides the missing values.
+	 *
+	 * This is useful because the router must continue deterministically from the
+	 * pending tool call instead of re-asking the LLM to reconstruct the same step.
+	 */
+	it("resumes a paused tool call after the client provides missing values", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-resume-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return request.toolResults.length === 0
+						? {
+								phase: "plan",
+								toolCalls: [
+									{
+										toolName: "create_user",
+										rationale: "A user creation tool is required.",
+										arguments: { role: "admin" },
+									},
+								],
+							}
+						: { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: `Created UI ${JSON.stringify(request.toolResults[0]?.result)}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => input,
+		);
+
+		const paused = await router.runAndRender("Create a new admin user");
+
+		if (!paused.pendingCorrection) {
+			throw new Error("Expected a pending correction payload.");
+		}
+
+		const resumed = await router.runAndRender("Alice Martin", undefined, {
+			correctionAnswer: {
+				pendingCorrection: paused.pendingCorrection,
+				values: { name: "Alice Martin" },
+			},
+		});
+
+		expect(resumed.status).toBe("completed");
+		expect(resumed.prompt).toBe("Create a new admin user");
+		expect(resumed.toolCalls).toHaveLength(1);
+		expect(resumed.toolCalls[0]?.arguments).toEqual({
+			name: "Alice Martin",
+			role: "admin",
+		});
+		expect(resumed.content).toContain("Alice Martin");
+	});
+
+	/**
+	 * Covers confirmation pauses for sensitive tools.
+	 *
+	 * This is useful because destructive actions should be able to stop for an
+	 * explicit client-side confirmation before the handler runs.
+	 */
+	it("requires explicit confirmation before executing a sensitive tool", async () => {
+		let removedEmployee = "";
+		const provider: AgenticLLMProvider = {
+			name: "confirmation-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return request.toolResults.length === 0
+						? {
+								phase: "plan",
+								toolCalls: [
+									{
+										toolName: "remove_user",
+										rationale: "The user asked for a deletion.",
+										arguments: { name: "Karim" },
+									},
+								],
+							}
+						: { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: `Removed ${JSON.stringify(request.toolResults[0]?.result)}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"remove_user",
+			"Remove a user account.",
+			z.object({
+				name: z.string().min(2),
+			}),
+			async ({ name }) => {
+				removedEmployee = name;
+				return { removed: name };
+			},
+			{
+				requiresConfirmation: true,
+				confirmationMessage:
+					'Please confirm that you want to delete the user "Karim".',
+				confirmationKey: "delete-user",
+			},
+		);
+
+		const paused = await router.runAndRender("Remove Karim");
+
+		expect(paused.status).toBe("needs-user-input");
+		expect(paused.pendingCorrection?.reason).toBe("confirmation-required");
+		expect(paused.pendingCorrection?.confirmationKey).toBe("delete-user");
+		expect(removedEmployee).toBe("");
+
+		if (!paused.pendingCorrection) {
+			throw new Error("Expected a pending correction payload.");
+		}
+
+		const resumed = await router.runAndRender("Yes, continue", undefined, {
+			correctionAnswer: {
+				pendingCorrection: paused.pendingCorrection,
+				confirmed: true,
+			},
+		});
+
+		expect(resumed.status).toBe("completed");
+		expect(removedEmployee).toBe("Karim");
+		expect(resumed.content).toContain("Karim");
+	});
+
+	/**
+	 * Covers history persistence for paused and resumed interactive corrections.
+	 *
+	 * This is useful because multi-request correction flows should leave a clear
+	 * conversation trail when a history provider is configured.
+	 */
+	it("persists pause and resume turns in conversation history during corrections", async () => {
+		const historyProvider = createInMemoryHistoryProvider();
+		const provider: AgenticLLMProvider = {
+			name: "interactive-history-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return request.toolResults.length === 0
+						? {
+								phase: "plan",
+								toolCalls: [
+									{
+										toolName: "create_user",
+										rationale: "A user creation tool is required.",
+										arguments: { role: "admin" },
+									},
+								],
+							}
+						: { phase: "plan", toolCalls: [] };
+				}
+
+				return {
+					phase: "render",
+					content: `Created UI ${JSON.stringify(request.toolResults[0]?.result)}`,
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			historyProvider,
+			enableInteractiveCorrections: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => input,
+		);
+
+		const paused = await router.runAndRender(
+			"Create a new admin user",
+			undefined,
+			{ conversationId: "interactive-thread" },
+		);
+
+		if (!paused.pendingCorrection) {
+			throw new Error("Expected a pending correction payload.");
+		}
+
+		const storedAfterPause = await historyProvider.get("interactive-thread");
+
+		expect(storedAfterPause).toHaveLength(2);
+		expect(storedAfterPause[0]?.content).toBe("Create a new admin user");
+		expect(storedAfterPause[1]?.content).toContain(
+			"I need more information before I can run create_user.",
+		);
+
+		await router.runAndRender("Alice Martin", undefined, {
+			conversationId: "interactive-thread",
+			correctionAnswer: {
+				pendingCorrection: paused.pendingCorrection,
+				values: { name: "Alice Martin" },
+			},
+		});
+
+		const storedAfterResume = await historyProvider.get("interactive-thread");
+
+		expect(storedAfterResume).toHaveLength(4);
+		expect(storedAfterResume[2]?.content).toBe("Alice Martin");
+		expect(storedAfterResume[3]?.content).toContain(
+			"Delivered a markdown response using the following tool results:",
+		);
+	});
+
+	/**
+	 * Covers the stream contract when interactive input is required.
+	 *
+	 * This is useful because clients using the streaming API need a stable pause
+	 * event instead of a partial final render when more user input is required.
+	 */
+	it("emits a needs-user-input stream event and stops before rendering", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-stream-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "create_user",
+								rationale: "A user creation tool is required.",
+								arguments: { role: "admin" },
+							},
+						],
+					};
+				}
+
+				return {
+					phase: "render",
+					content: "This should not render.",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			useStreaming: true,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => input,
+		);
+
+		const eventTypes: string[] = [];
+		for await (const event of router.runAndRenderStream(
+			"Create a new admin user",
+		)) {
+			eventTypes.push(event.type);
+		}
+
+		expect(eventTypes).toEqual(["tool-call", "needs-user-input"]);
+	});
+
+	/**
+	 * Covers backward compatibility when interactive corrections are disabled.
+	 *
+	 * This is useful because existing callers should keep the current strict
+	 * validation behavior unless they explicitly opt into the pause/resume flow.
+	 */
+	it("keeps strict validation behavior when interactive corrections are disabled", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "strict-validation-provider",
+			model: "strict-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "create_user",
+								rationale: "A user creation tool is required.",
+								arguments: { role: "admin" },
+							},
+						],
+					};
+				}
+
+				return {
+					phase: "render",
+					content: "unused",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			outputFormat: "markdown",
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => input,
+		);
+
+		await expect(
+			router.runAndRender("Create a new admin user"),
+		).rejects.toThrow();
 	});
 
 	/**

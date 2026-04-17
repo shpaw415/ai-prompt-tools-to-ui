@@ -1,5 +1,10 @@
 import { Database } from "bun:sqlite";
-import { AgenticRouter, createGitHubCopilotProvider, z } from "../";
+import {
+	AgenticRouter,
+	createBunSQLiteHistoryProvider,
+	createGitHubCopilotProvider,
+	z,
+} from "../";
 
 type EmployeeRow = {
 	id: number;
@@ -14,15 +19,20 @@ type EmployeeRow = {
 const database = new Database(`${import.meta.dir}/employees.sqlite`, {
 	create: true,
 });
+const historyProvider = createBunSQLiteHistoryProvider({
+	database,
+});
 
 initializeDatabase(database);
 
 const router = new AgenticRouter({
 	useStreaming: true,
+	enableInteractiveCorrections: true,
 	outputFormat: "html",
 	renderStyle: "inline-css",
 	renderStyleInstruction:
 		"Return a polished HR dashboard with clean cards, salary highlights, compact tables, and clear action summaries.",
+	historyProvider,
 	provider: createGitHubCopilotProvider({
 		apiKey: process.env.GITHUB_TOKEN as string,
 		model: "openai/gpt-4.1",
@@ -96,6 +106,12 @@ router.registerTool(
 			summary: buildPayrollSummary(getEmployees(database)),
 		};
 	},
+	{
+		requiresConfirmation: true,
+		confirmationKey: "remove-employee",
+		confirmationMessage:
+			"Please confirm that you want to remove this employee from the HR database.",
+	},
 );
 
 router.registerTool(
@@ -140,18 +156,20 @@ router.registerTool(
 	},
 );
 
-const prompt =
-	Bun.argv.slice(2).join(" ").trim() ||
-	"Show the employee roster and summarize the current payroll.";
+const { conversationId, prompt } = parseCliArguments(Bun.argv.slice(2));
 
 await router
 	.runAndRender(
 		prompt,
 		"You are a senior HR operations assistant for a Bun SQLite showcase. Use tools before guessing, reflect database changes exactly, summarize payroll impact clearly, and return clean HTML.",
+		{ conversationId },
 	)
 	.then((renderedOutput) => {
-		const { content, ...rest } = renderedOutput;
-		console.log(rest);
+		const { content, pendingCorrection, ...rest } = renderedOutput;
+		console.log({ ...rest, conversationId });
+		if (pendingCorrection) {
+			console.log({ pendingCorrection });
+		}
 		return Bun.file("output.html").write(content);
 	});
 
@@ -317,4 +335,30 @@ function toSalaryCents(value: number): number {
 
 function fromSalaryCents(value: number): number {
 	return Number((value / 100).toFixed(2));
+}
+
+function parseCliArguments(args: string[]): {
+	conversationId: string;
+	prompt: string;
+} {
+	let conversationId =
+		process.env.CONVERSATION_ID?.trim() || "hr-showcase-default";
+	const promptParts: string[] = [];
+
+	for (const arg of args) {
+		if (arg.startsWith("--conversation=")) {
+			conversationId =
+				arg.slice("--conversation=".length).trim() || conversationId;
+			continue;
+		}
+
+		promptParts.push(arg);
+	}
+
+	return {
+		conversationId,
+		prompt:
+			promptParts.join(" ").trim() ||
+			"Show the employee roster and summarize the current payroll.",
+	};
 }

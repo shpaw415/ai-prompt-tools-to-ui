@@ -48,11 +48,14 @@ export function buildPlanPrompt(request: AgenticLLMPlanRequest): string {
 	return [
 		"You are the planning engine for an agentic router.",
 		"Return JSON only.",
+		"Do not invent missing required tool arguments.",
+		"If a tool is clearly needed but required fields are missing or ambiguous, select the tool anyway and omit the unknown fields so the router can request clarification.",
 		`Desired UI format: ${request.outputFormat}`,
 		`Maximum tool calls in this step: ${request.maxToolCalls}`,
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
 			: "System instruction: none",
+		formatConversationHistory(request.conversationHistory),
 		`Available tools: ${JSON.stringify(describeTools(request.tools), null, 2)}`,
 		`Existing tool results: ${JSON.stringify(request.toolResults, null, 2)}`,
 		"Return this exact JSON shape:",
@@ -67,11 +70,14 @@ export function buildNativePlanPrompt(request: AgenticLLMPlanRequest): string {
 		"You are the planning engine for an agentic router.",
 		"Use native tool calls when additional backend data is required.",
 		"If the current tool results are already sufficient, do not call any tool.",
+		"Do not invent missing required tool arguments.",
+		"If a tool is clearly needed but required fields are missing or ambiguous, emit the tool call with only the known arguments so the router can ask the user for clarification.",
 		`Desired UI format: ${request.outputFormat}`,
 		`Maximum tool calls in this step: ${request.maxToolCalls}`,
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
 			: "System instruction: none",
+		formatConversationHistory(request.conversationHistory),
 		`Existing tool results: ${JSON.stringify(request.toolResults, null, 2)}`,
 		`User prompt: ${request.prompt}`,
 	].join("\n\n");
@@ -86,6 +92,7 @@ export function buildRenderPrompt(request: AgenticLLMRenderRequest): string {
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
 			: "System instruction: none",
+		formatConversationHistory(request.conversationHistory),
 		`Executed tool results: ${JSON.stringify(request.toolResults, null, 2)}`,
 		`Available tools: ${JSON.stringify(describeTools(request.tools), null, 2)}`,
 		`User prompt: ${request.prompt}`,
@@ -106,6 +113,7 @@ export function buildRenderStreamPrompt(
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
 			: "System instruction: none",
+		formatConversationHistory(request.conversationHistory),
 		`Executed tool results: ${JSON.stringify(request.toolResults, null, 2)}`,
 		`Available tools: ${JSON.stringify(describeTools(request.tools), null, 2)}`,
 		`User prompt: ${request.prompt}`,
@@ -424,6 +432,23 @@ function formatRenderStyleInstruction(
 		: "Additional styling instruction: none.";
 
 	return [style, guidance, customInstruction].filter(Boolean).join(" ");
+}
+
+function formatConversationHistory(
+	history:
+		| AgenticLLMPlanRequest["conversationHistory"]
+		| AgenticLLMRenderRequest["conversationHistory"],
+): string {
+	if (!history?.length) {
+		return "";
+	}
+
+	return [
+		"Recent conversation history:",
+		...history.map((message) => {
+			return `${message.role.toUpperCase()}: ${message.content}`;
+		}),
+	].join("\n");
 }
 
 function describeRenderStyle(

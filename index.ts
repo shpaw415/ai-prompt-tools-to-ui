@@ -1,6 +1,4 @@
-import type { FrameMasterPlugin } from "frame-master/plugin/types";
-import { z, type ZodTypeAny } from "zod";
-import { name, version } from "./package.json";
+import { z, type ZodError, type ZodTypeAny } from "zod";
 
 type Awaitable<T> = T | Promise<T>;
 
@@ -8,11 +6,70 @@ export type AgenticOutputFormat = "html" | "markdown";
 
 export type AgenticRenderStyle = "tailwind" | "inline-css" | "plain-css";
 
+export type AgenticConversationRole = "system" | "user" | "assistant";
+
+export interface AgenticConversationMessage {
+	role: AgenticConversationRole;
+	content: string;
+	timestamp?: string;
+	metadata?: Record<string, unknown>;
+}
+
+export interface AgenticConversationHistoryProvider {
+	name: string;
+	get: (
+		conversationId: string,
+	) => Awaitable<readonly AgenticConversationMessage[]>;
+	set: (
+		conversationId: string,
+		messages: readonly AgenticConversationMessage[],
+	) => Awaitable<void>;
+	delete?: (conversationId: string) => Awaitable<void>;
+}
+
+export interface AgenticRunOptions {
+	conversationId?: string;
+	correctionAnswer?: AgenticCorrectionAnswer;
+}
+
+export type AgenticRouterStatus = "completed" | "needs-user-input";
+
+export type AgenticCorrectionReason =
+	| "validation-required"
+	| "confirmation-required";
+
+export interface AgenticPendingCorrectionField {
+	name: string;
+	message: string;
+}
+
+export interface AgenticPendingCorrection {
+	reason: AgenticCorrectionReason;
+	message: string;
+	toolCall: AgenticToolCallPlan;
+	fields: readonly AgenticPendingCorrectionField[];
+	originalPrompt: string;
+	originalSystemInstruction?: string;
+	iteration: number;
+	confirmationKey?: string;
+	confirmationMessage?: string;
+}
+
+export interface AgenticCorrectionAnswer {
+	pendingCorrection: AgenticPendingCorrection;
+	values?: Record<string, unknown>;
+	confirmed?: boolean;
+}
+
 interface ResolvedAgenticRouterOptions {
 	model: string;
 	outputFormat: AgenticOutputFormat;
 	renderStyle?: AgenticRenderStyle;
 	renderStyleInstruction?: string;
+	historyProvider?: AgenticConversationHistoryProvider;
+	enableInteractiveCorrections: boolean;
+	includeHistoryInPlanning: boolean;
+	historyWindowSize: number;
 	maxIterations: number;
 	useStreaming: boolean;
 	provider: AgenticLLMProvider;
@@ -37,6 +94,7 @@ export interface AgenticLLMPlanRequest {
 	prompt: string;
 	systemInstruction?: string;
 	outputFormat: AgenticOutputFormat;
+	conversationHistory?: readonly AgenticConversationMessage[];
 	tools: readonly AgenticLLMToolDescriptor[];
 	toolResults: readonly AgenticToolExecutionResult[];
 	maxToolCalls: number;
@@ -60,6 +118,7 @@ export interface AgenticLLMRenderRequest {
 	outputFormat: AgenticOutputFormat;
 	renderStyle?: AgenticRenderStyle;
 	renderStyleInstruction?: string;
+	conversationHistory?: readonly AgenticConversationMessage[];
 	tools: readonly AgenticLLMToolDescriptor[];
 	toolResults: readonly AgenticToolExecutionResult[];
 }
@@ -113,6 +172,10 @@ export type AgenticRouterStreamEvent =
 			type: "render";
 			delta: string;
 			content: string;
+	  }
+	| {
+			type: "needs-user-input";
+			response: AgenticRouterResponse;
 	  }
 	| {
 			type: "done";
@@ -173,6 +236,14 @@ export interface AgenticRouterOptions {
 	/** Desired render target for the generated UI payload. */
 	outputFormat?: AgenticOutputFormat;
 	/**
+	 * Enables pause/resume corrections for missing tool inputs and confirmations.
+	 *
+	 * When enabled, the router can stop before tool execution, return a
+	 * structured correction payload to the caller, and continue later when the
+	 * caller provides the missing values or a confirmation answer.
+	 */
+	enableInteractiveCorrections?: boolean;
+	/**
 	 * Optional styling strategy requested from the render model.
 	 *
 	 * This influences how HTML output should be styled, for example with
@@ -186,6 +257,24 @@ export interface AgenticRouterOptions {
 	 * component density, or a restricted class naming scheme.
 	 */
 	renderStyleInstruction?: string;
+	/**
+	 * Optional provider used to persist conversation history between runs.
+	 */
+	historyProvider?: AgenticConversationHistoryProvider;
+	/**
+	 * Whether prior conversation history should be included during planning.
+	 *
+	 * When false, history is still persisted and available to the render phase,
+	 * but the planner only sees the current prompt and current-run tool results.
+	 */
+	includeHistoryInPlanning?: boolean;
+	/**
+	 * Maximum number of persisted messages loaded into a run.
+	 *
+	 * The window is counted in messages, not turns. A value of `0` disables
+	 * loading prior messages while still allowing future writes.
+	 */
+	historyWindowSize?: number;
 	/** Maximum planning iterations before the router forces a render. */
 	maxIterations?: number;
 	/**
@@ -218,7 +307,14 @@ export interface AgenticToolDefinition<
 	name: string;
 	description: string;
 	schema: Schema;
+	options?: AgenticToolOptions;
 	handler: AgenticToolHandler<Schema, Result>;
+}
+
+export interface AgenticToolOptions {
+	requiresConfirmation?: boolean;
+	confirmationMessage?: string;
+	confirmationKey?: string;
 }
 
 /**
@@ -256,6 +352,7 @@ export interface AgenticToolExecutionResult {
  * Final render payload returned to the consumer.
  */
 export interface AgenticRouterResponse {
+	status: AgenticRouterStatus;
 	model: string;
 	format: AgenticOutputFormat;
 	prompt: string;
@@ -263,7 +360,25 @@ export interface AgenticRouterResponse {
 	content: string;
 	toolCalls: AgenticToolExecutionResult[];
 	iterations: number;
+	pendingCorrection?: AgenticPendingCorrection;
 }
+
+interface CompletedToolResolution {
+	status: "completed";
+	effectivePrompt: string;
+	effectiveSystemInstruction?: string;
+	historyUserPrompt: string;
+	toolResults: AgenticToolExecutionResult[];
+	iterations: number;
+}
+
+interface PausedToolResolution {
+	status: "needs-user-input";
+	historyUserPrompt: string;
+	response: AgenticRouterResponse;
+}
+
+type ToolResolution = CompletedToolResolution | PausedToolResolution;
 
 /**
  * Plugin factory options.
@@ -296,6 +411,9 @@ export class AgenticRouter {
 
 		this.options = {
 			outputFormat: "markdown",
+			enableInteractiveCorrections: false,
+			includeHistoryInPlanning: true,
+			historyWindowSize: 12,
 			maxIterations: 3,
 			useStreaming: false,
 			...options,
@@ -318,6 +436,7 @@ export class AgenticRouter {
 		description: string,
 		schema: Schema,
 		handler: AgenticToolHandler<Schema, Result>,
+		toolOptions?: AgenticToolOptions,
 	): this {
 		if (!name.trim()) {
 			throw new Error("Tool name must be a non-empty string.");
@@ -331,6 +450,7 @@ export class AgenticRouter {
 			name,
 			description,
 			schema,
+			options: toolOptions,
 			handler,
 		});
 
@@ -346,30 +466,59 @@ export class AgenticRouter {
 	async runAndRender(
 		prompt: string,
 		systemInstruction?: string,
+		runOptions: AgenticRunOptions = {},
 	): Promise<AgenticRouterResponse> {
-		const { normalizedPrompt, toolResults, iterations } =
-			await this._resolveToolCalls(prompt, systemInstruction);
+		const normalizedPrompt = this._normalizePrompt(prompt);
+		const conversationHistory = await this._loadConversationHistory(runOptions);
+		const resolution = await this._resolveToolCalls(
+			normalizedPrompt,
+			systemInstruction,
+			conversationHistory,
+			runOptions,
+		);
+
+		if (resolution.status === "needs-user-input") {
+			await this._saveConversationTurn(
+				runOptions,
+				conversationHistory,
+				resolution.historyUserPrompt,
+				resolution.response,
+			);
+
+			return resolution.response;
+		}
 
 		const rendered = await this._callLLM({
 			phase: "render",
-			prompt: normalizedPrompt,
-			systemInstruction,
+			prompt: resolution.effectivePrompt,
+			systemInstruction: resolution.effectiveSystemInstruction,
 			outputFormat: this.options.outputFormat,
 			renderStyle: this.options.renderStyle,
 			renderStyleInstruction: this.options.renderStyleInstruction,
+			conversationHistory,
 			tools: this._getProviderTools(),
-			toolResults,
+			toolResults: resolution.toolResults,
 		});
 
-		return {
+		const response = {
+			status: "completed" as const,
 			model: this.options.model,
 			format: this.options.outputFormat,
-			prompt: normalizedPrompt,
-			systemInstruction,
+			prompt: resolution.effectivePrompt,
+			systemInstruction: resolution.effectiveSystemInstruction,
 			content: rendered.content,
-			toolCalls: toolResults,
-			iterations,
+			toolCalls: resolution.toolResults,
+			iterations: resolution.iterations,
 		};
+
+		await this._saveConversationTurn(
+			runOptions,
+			conversationHistory,
+			resolution.historyUserPrompt,
+			response,
+		);
+
+		return response;
 	}
 
 	/**
@@ -380,74 +529,49 @@ export class AgenticRouter {
 	async *runAndRenderStream(
 		prompt: string,
 		systemInstruction?: string,
+		runOptions: AgenticRunOptions = {},
 	): AsyncGenerator<AgenticRouterStreamEvent, AgenticRouterResponse, void> {
 		const normalizedPrompt = this._normalizePrompt(prompt);
-		const toolResults: AgenticToolExecutionResult[] = [];
-		let iterations = 0;
+		const conversationHistory = await this._loadConversationHistory(runOptions);
+		const planningEvents: AgenticRouterStreamEvent[] = [];
+		const resolution = await this._resolveToolCalls(
+			normalizedPrompt,
+			systemInstruction,
+			conversationHistory,
+			runOptions,
+			planningEvents,
+		);
 
-		while (iterations < this.options.maxIterations) {
-			iterations += 1;
+		for (const event of planningEvents) {
+			yield event;
+		}
 
-			const planning = await this._callLLM({
-				phase: "plan",
-				prompt: normalizedPrompt,
-				systemInstruction,
-				outputFormat: this.options.outputFormat,
-				tools: this._getProviderTools(),
-				toolResults,
-				maxToolCalls: 2,
-			});
-
-			if (planning.toolCalls.length === 0) {
-				break;
-			}
-
-			const nextCalls = this._getNextToolCalls(planning.toolCalls, toolResults);
-
-			if (nextCalls.length === 0) {
-				break;
-			}
-
-			for (const toolCall of nextCalls) {
-				yield {
-					type: "tool-call",
-					iteration: iterations,
-					toolCall,
-				};
-			}
-
-			const executedCalls = await Promise.all(
-				nextCalls.map((call) => {
-					return this._executeToolCall(call, {
-						prompt: normalizedPrompt,
-						systemInstruction,
-						iteration: iterations,
-						outputFormat: this.options.outputFormat,
-						toolResults,
-					});
-				}),
+		if (resolution.status === "needs-user-input") {
+			await this._saveConversationTurn(
+				runOptions,
+				conversationHistory,
+				resolution.historyUserPrompt,
+				resolution.response,
 			);
 
-			toolResults.push(...executedCalls);
+			yield {
+				type: "needs-user-input",
+				response: resolution.response,
+			};
 
-			for (const result of executedCalls) {
-				yield {
-					type: "tool-result",
-					iteration: iterations,
-					result,
-				};
-			}
+			return resolution.response;
 		}
 
 		const renderRequest: AgenticLLMRenderRequest = {
 			phase: "render",
-			prompt: normalizedPrompt,
-			systemInstruction,
+			prompt: resolution.effectivePrompt,
+			systemInstruction: resolution.effectiveSystemInstruction,
 			outputFormat: this.options.outputFormat,
 			renderStyle: this.options.renderStyle,
 			renderStyleInstruction: this.options.renderStyleInstruction,
+			conversationHistory,
 			tools: this._getProviderTools(),
-			toolResults,
+			toolResults: resolution.toolResults,
 		};
 		let content = "";
 
@@ -466,14 +590,22 @@ export class AgenticRouter {
 		}
 
 		const response: AgenticRouterResponse = {
+			status: "completed",
 			model: this.options.model,
 			format: this.options.outputFormat,
-			prompt: normalizedPrompt,
-			systemInstruction,
+			prompt: resolution.effectivePrompt,
+			systemInstruction: resolution.effectiveSystemInstruction,
 			content,
-			toolCalls: toolResults,
-			iterations,
+			toolCalls: resolution.toolResults,
+			iterations: resolution.iterations,
 		};
+
+		await this._saveConversationTurn(
+			runOptions,
+			conversationHistory,
+			resolution.historyUserPrompt,
+			response,
+		);
 
 		yield {
 			type: "done",
@@ -489,11 +621,24 @@ export class AgenticRouter {
 	private async _executeToolCall(
 		plan: AgenticToolCallPlan,
 		context: AgenticToolExecutionContext,
+		options: {
+			allowConfirmationExecution?: boolean;
+		} = {},
 	): Promise<AgenticToolExecutionResult> {
 		const definition = this.tools.get(plan.toolName);
 
 		if (!definition) {
 			throw new Error(`Unknown tool "${plan.toolName}".`);
+		}
+
+		if (
+			this.options.enableInteractiveCorrections &&
+			definition.options?.requiresConfirmation &&
+			!options.allowConfirmationExecution
+		) {
+			throw new Error(
+				`Tool "${plan.toolName}" requires confirmation before execution.`,
+			);
 		}
 
 		const startedAt = performance.now();
@@ -577,25 +722,66 @@ export class AgenticRouter {
 	 * Resolves planning and tool execution before the final render phase.
 	 */
 	private async _resolveToolCalls(
-		prompt: string,
+		normalizedPrompt: string,
 		systemInstruction?: string,
-	): Promise<{
-		normalizedPrompt: string;
-		toolResults: AgenticToolExecutionResult[];
-		iterations: number;
-	}> {
-		const normalizedPrompt = this._normalizePrompt(prompt);
+		conversationHistory?: readonly AgenticConversationMessage[],
+		runOptions: AgenticRunOptions = {},
+		streamEvents?: AgenticRouterStreamEvent[],
+	): Promise<ToolResolution> {
+		const effectivePrompt =
+			runOptions.correctionAnswer?.pendingCorrection.originalPrompt ??
+			normalizedPrompt;
+		const effectiveSystemInstruction =
+			runOptions.correctionAnswer?.pendingCorrection
+				.originalSystemInstruction ?? systemInstruction;
+		const historyUserPrompt = normalizedPrompt;
 		const toolResults: AgenticToolExecutionResult[] = [];
 		let iterations = 0;
+
+		if (runOptions.correctionAnswer) {
+			const resumedExecution = await this._resumePendingCorrection(
+				runOptions.correctionAnswer,
+				{
+					prompt: effectivePrompt,
+					systemInstruction: effectiveSystemInstruction,
+					iteration: runOptions.correctionAnswer.pendingCorrection.iteration,
+					outputFormat: this.options.outputFormat,
+					toolResults,
+				},
+			);
+
+			iterations = runOptions.correctionAnswer.pendingCorrection.iteration;
+
+			if (resumedExecution.status === "needs-user-input") {
+				return {
+					status: "needs-user-input",
+					historyUserPrompt,
+					response: resumedExecution.response,
+				};
+			}
+
+			toolResults.push(resumedExecution.result);
+
+			if (streamEvents) {
+				streamEvents.push({
+					type: "tool-result",
+					iteration: iterations,
+					result: resumedExecution.result,
+				});
+			}
+		}
 
 		while (iterations < this.options.maxIterations) {
 			iterations += 1;
 
 			const planning = await this._callLLM({
 				phase: "plan",
-				prompt: normalizedPrompt,
-				systemInstruction,
+				prompt: effectivePrompt,
+				systemInstruction: effectiveSystemInstruction,
 				outputFormat: this.options.outputFormat,
+				conversationHistory: this.options.includeHistoryInPlanning
+					? conversationHistory
+					: undefined,
 				tools: this._getProviderTools(),
 				toolResults,
 				maxToolCalls: 2,
@@ -611,26 +797,157 @@ export class AgenticRouter {
 				break;
 			}
 
-			const executedCalls = await Promise.all(
-				nextCalls.map((call) => {
-					return this._executeToolCall(call, {
-						prompt: normalizedPrompt,
-						systemInstruction,
+			for (const toolCall of nextCalls) {
+				if (streamEvents) {
+					streamEvents.push({
+						type: "tool-call",
 						iteration: iterations,
-						outputFormat: this.options.outputFormat,
-						toolResults,
+						toolCall,
 					});
-				}),
-			);
+				}
 
-			toolResults.push(...executedCalls);
+				const execution = await this._tryExecutePlannedToolCall(toolCall, {
+					prompt: effectivePrompt,
+					systemInstruction: effectiveSystemInstruction,
+					iteration: iterations,
+					outputFormat: this.options.outputFormat,
+					toolResults,
+				});
+
+				if (execution.status === "needs-user-input") {
+					return {
+						status: "needs-user-input",
+						historyUserPrompt,
+						response: execution.response,
+					};
+				}
+
+				toolResults.push(execution.result);
+
+				if (streamEvents) {
+					streamEvents.push({
+						type: "tool-result",
+						iteration: iterations,
+						result: execution.result,
+					});
+				}
+			}
 		}
 
 		return {
-			normalizedPrompt,
+			status: "completed",
+			effectivePrompt,
+			effectiveSystemInstruction,
+			historyUserPrompt,
 			toolResults,
 			iterations,
 		};
+	}
+
+	private async _loadConversationHistory(
+		runOptions: AgenticRunOptions,
+	): Promise<AgenticConversationMessage[]> {
+		if (!runOptions.conversationId || !this.options.historyProvider) {
+			return [];
+		}
+
+		const messages = await this.options.historyProvider.get(
+			runOptions.conversationId,
+		);
+
+		return this._trimConversationHistory(messages);
+	}
+
+	private async _saveConversationTurn(
+		runOptions: AgenticRunOptions,
+		existingHistory: readonly AgenticConversationMessage[],
+		userPrompt: string,
+		response: AgenticRouterResponse,
+	): Promise<void> {
+		if (!runOptions.conversationId || !this.options.historyProvider) {
+			return;
+		}
+
+		const timestamp = new Date().toISOString();
+		const userMessage: AgenticConversationMessage = {
+			role: "user",
+			content: userPrompt,
+			timestamp,
+			metadata: {
+				...(response.systemInstruction
+					? { systemInstruction: response.systemInstruction }
+					: {}),
+				...(response.prompt !== userPrompt
+					? { correctionTargetPrompt: response.prompt }
+					: {}),
+			},
+		};
+		const assistantMessage: AgenticConversationMessage = {
+			role: "assistant",
+			content: this._buildAssistantHistoryEntry(response),
+			timestamp,
+			metadata: {
+				status: response.status,
+				format: response.format,
+				iterations: response.iterations,
+				pendingCorrection: response.pendingCorrection,
+				toolCalls: response.toolCalls.map((toolCall) => {
+					return {
+						toolName: toolCall.toolName,
+						rationale: toolCall.rationale,
+						arguments: toolCall.arguments,
+						result: toolCall.result,
+					};
+				}),
+			},
+		};
+
+		await this.options.historyProvider.set(
+			runOptions.conversationId,
+			this._trimConversationHistory([
+				...existingHistory,
+				userMessage,
+				assistantMessage,
+			]),
+		);
+	}
+
+	private _trimConversationHistory(
+		messages: readonly AgenticConversationMessage[],
+	): AgenticConversationMessage[] {
+		const historyWindowSize = Math.max(0, this.options.historyWindowSize);
+
+		if (historyWindowSize === 0) {
+			return [];
+		}
+
+		return [...messages].slice(-historyWindowSize);
+	}
+
+	private _buildAssistantHistoryEntry(response: AgenticRouterResponse): string {
+		if (response.status === "needs-user-input") {
+			return response.pendingCorrection?.message ?? response.content;
+		}
+
+		if (response.toolCalls.length === 0) {
+			return `Delivered a ${response.format} response without calling any tool.`;
+		}
+
+		return [
+			`Delivered a ${response.format} response using the following tool results:`,
+			JSON.stringify(
+				response.toolCalls.map((toolCall) => {
+					return {
+						toolName: toolCall.toolName,
+						rationale: toolCall.rationale,
+						arguments: toolCall.arguments,
+						result: toolCall.result,
+					};
+				}),
+				null,
+				2,
+			),
+		].join("\n\n");
 	}
 
 	/**
@@ -670,10 +987,214 @@ export class AgenticRouter {
 		return [...this.tools.values()].map((tool) => {
 			return {
 				name: tool.name,
-				description: tool.description,
+				description: tool.options?.requiresConfirmation
+					? `${tool.description} Requires explicit user confirmation before execution.`
+					: tool.description,
 				schema: tool.schema,
 			};
 		});
+	}
+
+	private async _resumePendingCorrection(
+		correctionAnswer: AgenticCorrectionAnswer,
+		context: AgenticToolExecutionContext,
+	): Promise<
+		| { status: "completed"; result: AgenticToolExecutionResult }
+		| { status: "needs-user-input"; response: AgenticRouterResponse }
+	> {
+		const pendingCorrection = correctionAnswer.pendingCorrection;
+		const mergedToolCall: AgenticToolCallPlan = {
+			...pendingCorrection.toolCall,
+			arguments: {
+				...pendingCorrection.toolCall.arguments,
+				...(correctionAnswer.values ?? {}),
+			},
+		};
+
+		if (
+			pendingCorrection.reason === "confirmation-required" &&
+			correctionAnswer.confirmed !== true
+		) {
+			return {
+				status: "needs-user-input",
+				response: this._buildPausedResponse(
+					pendingCorrection,
+					context.toolResults,
+				),
+			};
+		}
+
+		return this._tryExecutePlannedToolCall(mergedToolCall, context, {
+			allowConfirmationExecution: correctionAnswer.confirmed === true,
+		});
+	}
+
+	private async _tryExecutePlannedToolCall(
+		plan: AgenticToolCallPlan,
+		context: AgenticToolExecutionContext,
+		options: {
+			allowConfirmationExecution?: boolean;
+		} = {},
+	): Promise<
+		| { status: "completed"; result: AgenticToolExecutionResult }
+		| { status: "needs-user-input"; response: AgenticRouterResponse }
+	> {
+		const definition = this.tools.get(plan.toolName);
+
+		if (!definition) {
+			throw new Error(`Unknown tool "${plan.toolName}".`);
+		}
+
+		const validation = await definition.schema.safeParseAsync(plan.arguments);
+
+		if (!validation.success) {
+			if (this.options.enableInteractiveCorrections) {
+				return {
+					status: "needs-user-input",
+					response: this._buildPausedResponse(
+						this._createValidationCorrection(plan, context, validation.error),
+						context.toolResults,
+					),
+				};
+			}
+
+			throw validation.error;
+		}
+
+		if (
+			this.options.enableInteractiveCorrections &&
+			definition.options?.requiresConfirmation &&
+			!options.allowConfirmationExecution
+		) {
+			return {
+				status: "needs-user-input",
+				response: this._buildPausedResponse(
+					this._createConfirmationCorrection(plan, context, definition.options),
+					context.toolResults,
+				),
+			};
+		}
+
+		return {
+			status: "completed",
+			result: await this._executeToolCall(plan, context, options),
+		};
+	}
+
+	private _createValidationCorrection(
+		plan: AgenticToolCallPlan,
+		context: AgenticToolExecutionContext,
+		error: ZodError,
+	): AgenticPendingCorrection {
+		const fields = this._extractCorrectionFields(error);
+
+		return {
+			reason: "validation-required",
+			message:
+				fields.length > 0
+					? `I need more information before I can run ${plan.toolName}. Please provide: ${fields
+							.map((field) => field.name)
+							.join(", ")}.`
+					: `I need corrected input before I can run ${plan.toolName}.`,
+			toolCall: plan,
+			fields,
+			originalPrompt: context.prompt,
+			originalSystemInstruction: context.systemInstruction,
+			iteration: context.iteration,
+		};
+	}
+
+	private _createConfirmationCorrection(
+		plan: AgenticToolCallPlan,
+		context: AgenticToolExecutionContext,
+		options: AgenticToolOptions,
+	): AgenticPendingCorrection {
+		const confirmationMessage =
+			options.confirmationMessage ??
+			`Please confirm before I run ${plan.toolName}.`;
+
+		return {
+			reason: "confirmation-required",
+			message: confirmationMessage,
+			toolCall: plan,
+			fields: [],
+			originalPrompt: context.prompt,
+			originalSystemInstruction: context.systemInstruction,
+			iteration: context.iteration,
+			confirmationKey: options.confirmationKey,
+			confirmationMessage,
+		};
+	}
+
+	private _extractCorrectionFields(
+		error: ZodError,
+	): AgenticPendingCorrectionField[] {
+		const dedupedFields = new Map<string, AgenticPendingCorrectionField>();
+
+		for (const issue of error.issues) {
+			const fieldName = issue.path.length > 0 ? issue.path.join(".") : "input";
+
+			if (!dedupedFields.has(fieldName)) {
+				dedupedFields.set(fieldName, {
+					name: fieldName,
+					message: issue.message,
+				});
+			}
+		}
+
+		return [...dedupedFields.values()];
+	}
+
+	private _buildPausedResponse(
+		pendingCorrection: AgenticPendingCorrection,
+		toolCalls: readonly AgenticToolExecutionResult[],
+	): AgenticRouterResponse {
+		return {
+			status: "needs-user-input",
+			model: this.options.model,
+			format: this.options.outputFormat,
+			prompt: pendingCorrection.originalPrompt,
+			systemInstruction: pendingCorrection.originalSystemInstruction,
+			content: this._renderPausedResponseContent(pendingCorrection),
+			toolCalls: [...toolCalls],
+			iterations: pendingCorrection.iteration,
+			pendingCorrection,
+		};
+	}
+
+	private _renderPausedResponseContent(
+		pendingCorrection: AgenticPendingCorrection,
+	): string {
+		if (this.options.outputFormat === "html") {
+			const fields = pendingCorrection.fields.length
+				? `<ul>${pendingCorrection.fields
+						.map((field) => {
+							return `<li><strong>${escapeHtml(field.name)}</strong>: ${escapeHtml(field.message)}</li>`;
+						})
+						.join("")}</ul>`
+				: "";
+
+			return [
+				'<article class="agentic-ui agentic-ui-correction">',
+				"  <header>",
+				"    <h1>Additional Input Required</h1>",
+				`    <p>${escapeHtml(pendingCorrection.message)}</p>`,
+				"  </header>",
+				fields ? `  <section>${fields}</section>` : "",
+				"</article>",
+			]
+				.filter(Boolean)
+				.join("\n");
+		}
+
+		return [
+			"# Additional Input Required",
+			"",
+			pendingCorrection.message,
+			...pendingCorrection.fields.map((field) => {
+				return `- ${field.name}: ${field.message}`;
+			}),
+		].join("\n");
 	}
 }
 
@@ -1059,41 +1580,6 @@ export function createAgenticRouter(
 	return new AgenticRouter(options);
 }
 
-/**
- * Frame-Master plugin entry point.
- */
-export default function frameMasterPluginAgenticUI(
-	options: AgenticUIPluginOptions = {},
-): FrameMasterPlugin {
-	const routerOptions = options.routerOptions ?? {
-		model: "mock-agentic-llm",
-		outputFormat: "markdown" as const,
-	};
-	const providerName = routerOptions.provider?.name ?? "mock-llm-provider";
-	const providerModel =
-		routerOptions.provider?.model ?? routerOptions.model ?? "mock-agentic-llm";
-
-	return {
-		name,
-		version,
-		priority: options.priority ?? 100,
-		serverStart: {
-			main: async () => {
-				console.log(
-					`[${name}] ready with provider=${providerName} model=${providerModel} format=${routerOptions.outputFormat ?? "markdown"}`,
-				);
-			},
-			dev_main: async () => {
-				console.log(`[${name}] development mode enabled`);
-			},
-		},
-		requirement: {
-			frameMasterVersion: "^1.0.0",
-			bunVersion: ">=1.2.0",
-		},
-	};
-}
-
 export { z };
 export {
 	createOpenAIProvider,
@@ -1115,3 +1601,20 @@ export {
 	createGitHubCopilotProvider,
 	type GitHubModelsProviderOptions,
 } from "./provider/github";
+export { createInMemoryHistoryProvider } from "./history/in-memory";
+export {
+	createBunSQLiteHistoryProvider,
+	type BunSQLiteHistoryProviderOptions,
+} from "./history/bun-sqlite";
+export {
+	createCloudflareD1HistoryProvider,
+	type CloudflareD1Database,
+	type CloudflareD1HistoryProviderOptions,
+	type CloudflareD1PreparedStatement,
+	type CloudflareD1Result,
+} from "./history/cloudflare-d1";
+export {
+	createCloudflareKVHistoryProvider,
+	type CloudflareKVHistoryProviderOptions,
+	type CloudflareKVNamespace,
+} from "./history/cloudflare-kv";

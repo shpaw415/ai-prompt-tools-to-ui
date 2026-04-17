@@ -1,64 +1,73 @@
-<div style="font-family:Segoe UI,Arial,sans-serif;background:#f7f9fa;padding:32px;max-width:900px;margin:auto;">
-  <h1 style="font-size:2rem;color:#222;margin-bottom:16px;">HR Dashboard</h1>
-  <div style="display:flex;gap:24px;margin-bottom:32px;">
-    <div style="flex:1;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;display:flex;flex-direction:column;align-items:center;">
-      <span style="font-size:1.1rem;color:#888;">Headcount</span>
-      <span style="font-size:2.2rem;font-weight:600;color:#2a7ae2;margin-top:8px;">3</span>
+<div style="font-family: Arial, sans-serif; background: #f7f9fa; padding: 32px;">
+  <h2 style="margin-bottom: 24px; color: #2d3748;">HR Dashboard</h2>
+  <div style="display: flex; gap: 24px; margin-bottom: 32px;">
+    <div style="background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); padding: 24px; flex: 1;">
+      <h3 style="margin-top: 0; color: #4a5568;">Headcount</h3>
+      <div style="font-size: 32px; font-weight: bold; color: #3182ce;">4</div>
     </div>
-    <div style="flex:1;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;display:flex;flex-direction:column;align-items:center;">
-      <span style="font-size:1.1rem;color:#888;">Total Payroll</span>
-      <span style="font-size:2.2rem;font-weight:600;color:#27ae60;margin-top:8px;">$225,000</span>
+    <div style="background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); padding: 24px; flex: 1;">
+      <h3 style="margin-top: 0; color: #4a5568;">Total Payroll</h3>
+      <div style="font-size: 32px; font-weight: bold; color: #38a169;">$225,025</div>
     </div>
-    <div style="flex:1;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;display:flex;flex-direction:column;align-items:center;">
-      <span style="font-size:1.1rem;color:#888;">Avg. Salary</span>
-      <span style="font-size:2.2rem;font-weight:600;color:#e67e22;margin-top:8px;">$75,000</span>
+    <div style="background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); padding: 24px; flex: 1;">
+      <h3 style="margin-top: 0; color: #4a5568;">Average Salary</h3>
+      <div style="font-size: 32px; font-weight: bold; color: #ed8936;">$56,256</div>
     </div>
-    <div style="flex:1;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;display:flex;flex-direction:column;align-items:center;">
-      <span style="font-size:1.1rem;color:#888;">Highest Salary</span>
-      <span style="font-size:1.2rem;font-weight:500;color:#222;margin-top:8px;">Karim Diallo</span>
-      <span style="font-size:1.5rem;font-weight:600;color:#c0392b;">$84,500</span>
+    <div style="background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); padding: 24px; flex: 1;">
+      <h3 style="margin-top: 0; color: #4a5568;">Highest Salary</h3>
+      <div style="font-size: 18px; color: #2d3748;">Karim Diallo</div>
+      <div style="font-size: 24px; font-weight: bold; color: #e53e3e;">$84,500</div>
     </div>
   </div>
-  <div style="background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;">
-    <h2 style="font-size:1.3rem;color:#222;margin-bottom:16px;">Employee Roster</h2>
-    <table style="width:100%;border-collapse:collapse;font-size:1rem;">
+
+  <div style="margin-bottom: 32px;">
+    <h3 style="color: #2d3748; margin-bottom: 12px;">New Employee Added</h3>
+    <div style="background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 18px; display: flex; align-items: center; gap: 24px;">
+      <div style="flex: 1;">
+        <div style="font-size: 20px; font-weight: 600; color: #3182ce;">New Employee</div>
+        <div style="color: #718096; font-size: 14px;">Role: Employee</div>
+        <div style="color: #718096; font-size: 14px;">Department: <span style="color: #a0aec0;">Not Assigned</span></div>
+      </div>
+      <div style="font-size: 22px; font-weight: bold; color: #38a169;">$25/hr</div>
+      <div style="color: #a0aec0; font-size: 13px;">Added: 2026-04-17</div>
+    </div>
+  </div>
+
+  <div style="margin-bottom: 32px;">
+    <h3 style="color: #2d3748; margin-bottom: 12px;">Salary Comparison</h3>
+    <table style="width: 100%; background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); border-collapse: collapse;">
       <thead>
-        <tr style="background:#f2f4f7;">
-          <th style="padding:10px 8px;text-align:left;color:#555;font-weight:600;border-bottom:1px solid #e5e8eb;">Name</th>
-          <th style="padding:10px 8px;text-align:left;color:#555;font-weight:600;border-bottom:1px solid #e5e8eb;">Role</th>
-          <th style="padding:10px 8px;text-align:left;color:#555;font-weight:600;border-bottom:1px solid #e5e8eb;">Department</th>
-          <th style="padding:10px 8px;text-align:right;color:#555;font-weight:600;border-bottom:1px solid #e5e8eb;">Salary</th>
+        <tr style="background: #f1f5f9;">
+          <th style="padding: 10px 16px; text-align: left; color: #4a5568; font-size: 14px;">Employee</th>
+          <th style="padding: 10px 16px; text-align: left; color: #4a5568; font-size: 14px;">Role</th>
+          <th style="padding: 10px 16px; text-align: left; color: #4a5568; font-size: 14px;">Salary</th>
         </tr>
       </thead>
       <tbody>
-        <tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Alicia Bernard</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Frontend Engineer</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Product Engineering</td>
-          <td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f2f4f7;">$72,000</td>
+        <tr style="border-bottom: 1px solid #e2e8f0;">
+          <td style="padding: 10px 16px; color: #3182ce; font-weight: 600;">New Employee</td>
+          <td style="padding: 10px 16px; color: #718096;">Employee</td>
+          <td style="padding: 10px 16px; color: #38a169; font-weight: bold;">$25/hr</td>
         </tr>
         <tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Karim Diallo</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">DevOps Engineer</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Platform</td>
-          <td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f2f4f7;">$84,500</td>
-        </tr>
-        <tr>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Mina Rossi</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Product Designer</td>
-          <td style="padding:10px 8px;border-bottom:1px solid #f2f4f7;">Design</td>
-          <td style="padding:10px 8px;text-align:right;border-bottom:1px solid #f2f4f7;">$68,500</td>
+          <td style="padding: 10px 16px; color: #3182ce; font-weight: 600;">Closest Salary</td>
+          <td style="padding: 10px 16px; color: #718096;">Unknown</td>
+          <td style="padding: 10px 16px; color: #38a169; font-weight: bold;">$25/hr</td>
         </tr>
       </tbody>
     </table>
+    <div style="margin-top: 10px; color: #718096; font-size: 13px;">Closest salary match is $25/hr (self-comparison, as no other employee has a similar low hourly rate).</div>
   </div>
-  <div style="margin-top:32px;background:#fff;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);padding:24px;">
-    <h2 style="font-size:1.1rem;color:#222;margin-bottom:12px;">Payroll Summary</h2>
-    <ul style="margin:0;padding-left:18px;color:#555;font-size:1rem;">
-      <li style="margin-bottom:8px;">Current payroll covers <strong>3 employees</strong> across Product Engineering, Platform, and Design.</li>
-      <li style="margin-bottom:8px;">Total payroll is <strong>$225,000</strong> annually, with an average salary of <strong>$75,000</strong>.</li>
-      <li style="margin-bottom:8px;">Highest salary: <strong>Karim Diallo</strong> ($84,500).</li>
-      <li>All data reflects the latest database state as of <span style="color:#888;">2026-04-17</span>.</li>
+
+  <div style="background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); padding: 18px;">
+    <h3 style="color: #2d3748; margin-bottom: 8px;">Action Summary</h3>
+    <ul style="margin: 0; padding-left: 18px; color: #4a5568; font-size: 15px;">
+      <li>Added <strong>New Employee</strong> with a salary of <strong>$25/hr</strong>.</li>
+      <li>Headcount increased to <strong>4</strong>.</li>
+      <li>Total payroll now <strong>$225,025</strong>.</li>
+      <li>Average salary is <strong>$56,256</strong>.</li>
+      <li>Highest salary remains <strong>$84,500</strong> (Karim Diallo).</li>
+      <li>Closest salary to $25/hr is <strong>$25/hr</strong> (self-comparison).</li>
     </ul>
   </div>
 </div>

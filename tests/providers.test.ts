@@ -8,8 +8,40 @@ import {
 	type AgenticLLMRenderRequest,
 	z,
 } from "../index";
+import { buildPlanPrompt } from "../provider/shared";
 
 describe("vendor providers", () => {
+	/**
+	 * Covers the planner prompt guidance for interactive corrections.
+	 *
+	 * This is useful because providers need explicit instructions to avoid
+	 * inventing missing arguments when the router can pause for clarification.
+	 */
+	it("includes missing-argument correction guidance in the planning prompt", () => {
+		const prompt = buildPlanPrompt({
+			phase: "plan",
+			prompt: "create a new admin user",
+			outputFormat: "markdown",
+			tools: [
+				{
+					name: "create_user",
+					description: "Create a user account.",
+					schema: z.object({
+						name: z.string().min(2),
+						role: z.string().min(2),
+					}),
+				},
+			],
+			toolResults: [],
+			maxToolCalls: 2,
+		} satisfies AgenticLLMPlanRequest);
+
+		expect(prompt).toContain("Do not invent missing required tool arguments.");
+		expect(prompt).toContain(
+			"select the tool anyway and omit the unknown fields",
+		);
+	});
+
 	/**
 	 * Covers native OpenAI tool calling during the planning phase.
 	 *
@@ -59,6 +91,16 @@ describe("vendor providers", () => {
 			prompt: "find a laptop",
 			outputFormat: "markdown",
 			systemInstruction: "Use tools when needed.",
+			conversationHistory: [
+				{
+					role: "user",
+					content: "show the current employees",
+				},
+				{
+					role: "assistant",
+					content: "Delivered a markdown response without calling any tool.",
+				},
+			],
 			tools: [
 				{
 					name: "search_catalog",
@@ -72,6 +114,15 @@ describe("vendor providers", () => {
 
 		expect(capturedUrl).toBe("https://api.openai.com/v1/chat/completions");
 		expect(capturedBody?.tool_choice).toBe("auto");
+		expect(capturedBody?.messages).toMatchObject([
+			{
+				role: "system",
+			},
+			{
+				role: "user",
+				content: expect.anything(),
+			},
+		]);
 		expect(capturedBody?.tools).toMatchObject([
 			{
 				type: "function",
@@ -236,12 +287,17 @@ describe("vendor providers", () => {
 	 */
 	it("normalizes Gemini render responses", async () => {
 		let capturedUrl = "";
+		let capturedBody: Record<string, unknown> | undefined;
 
 		const provider = createGeminiProvider({
 			apiKey: "gemini-key",
 			model: "gemini-2.5-flash",
-			fetchImplementation: createFetchStub(async (input) => {
+			fetchImplementation: createFetchStub(async (input, init) => {
 				capturedUrl = String(input);
+				capturedBody = JSON.parse(String(init?.body)) as Record<
+					string,
+					unknown
+				>;
 
 				return new Response(
 					JSON.stringify({
@@ -263,12 +319,24 @@ describe("vendor providers", () => {
 			prompt: "render the answer",
 			outputFormat: "markdown",
 			systemInstruction: "Return markdown.",
+			conversationHistory: [
+				{
+					role: "user",
+					content: "show the payroll summary",
+				},
+			],
 			tools: [],
 			toolResults: [],
 		} satisfies AgenticLLMRenderRequest);
 
 		expect(capturedUrl).toContain(
 			"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=gemini-key",
+		);
+		expect(JSON.stringify(capturedBody)).toContain(
+			"Recent conversation history:",
+		);
+		expect(JSON.stringify(capturedBody)).toContain(
+			"USER: show the payroll summary",
 		);
 		expect(response).toEqual({
 			phase: "render",

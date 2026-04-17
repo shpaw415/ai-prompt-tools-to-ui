@@ -43,6 +43,201 @@ const response = await router.runAndRender(
 console.log(response.content);
 ```
 
+## Conversation History
+
+The router can persist prior turns through a pluggable history provider. History
+is loaded per call by passing a `conversationId` in the third argument of
+`runAndRender()` or `runAndRenderStream()`.
+
+```typescript
+import {
+  AgenticRouter,
+  createBunSQLiteHistoryProvider,
+  createCloudflareD1HistoryProvider,
+  createCloudflareKVHistoryProvider,
+  createInMemoryHistoryProvider,
+} from "ai-prompt-tools-to-ui";
+
+const router = new AgenticRouter({
+  outputFormat: "markdown",
+  historyProvider: createInMemoryHistoryProvider(),
+});
+
+await router.runAndRender(
+  "List the current employees",
+  "Use tools before guessing.",
+  { conversationId: "hr-demo" },
+);
+
+await router.runAndRender(
+  "Increase Karim salary by 1000 more",
+  "Use tools before guessing.",
+  { conversationId: "hr-demo" },
+);
+```
+
+The built-in contract is intentionally small:
+
+- `get(conversationId)` loads prior messages
+- `set(conversationId, messages)` persists the updated thread
+
+That means you can back it with in-memory storage, SQLite, Redis, files, or any
+other store that fits your app.
+
+Built-in providers now available:
+
+- `createInMemoryHistoryProvider()`
+- `createBunSQLiteHistoryProvider({ database })`
+- `createCloudflareD1HistoryProvider({ database })`
+- `createCloudflareKVHistoryProvider({ namespace })`
+
+Example with Bun SQLite:
+
+```typescript
+import { Database } from "bun:sqlite";
+import {
+  AgenticRouter,
+  createBunSQLiteHistoryProvider,
+} from "ai-prompt-tools-to-ui";
+
+const database = new Database("./history.sqlite", { create: true });
+
+const router = new AgenticRouter({
+  outputFormat: "markdown",
+  historyProvider: createBunSQLiteHistoryProvider({ database }),
+});
+```
+
+## Interactive Corrections
+
+The router can pause before tool execution when a required field is missing or
+when a sensitive action needs explicit confirmation. This is useful for real
+client/server flows where the server must return a structured question to the
+client, wait for the user answer, then continue on a later request.
+
+Enable it with `enableInteractiveCorrections: true`.
+
+```typescript
+import { AgenticRouter, z } from "ai-prompt-tools-to-ui";
+
+const router = new AgenticRouter({
+  outputFormat: "markdown",
+  enableInteractiveCorrections: true,
+});
+
+router.registerTool(
+  "create_user",
+  "Create a user account.",
+  z.object({
+    name: z.string().min(2),
+    role: z.string().min(2),
+  }),
+  async ({ name, role }) => ({ created: true, name, role }),
+);
+
+const firstResponse = await router.runAndRender("Create a new admin user");
+
+if (firstResponse.status === "needs-user-input") {
+  console.log(firstResponse.pendingCorrection);
+}
+```
+
+When the router pauses, the response contains:
+
+- `status: "needs-user-input"`
+- `pendingCorrection.reason`: `validation-required` or `confirmation-required`
+- `pendingCorrection.fields`: missing or invalid fields the client should collect
+- `pendingCorrection.toolCall`: the pending tool call to resume later
+- `content`: a renderable fallback message for immediate UI display
+
+To resume, send the client answer back through `runOptions.correctionAnswer`.
+
+```typescript
+const resumedResponse = await router.runAndRender("Alice Martin", undefined, {
+  correctionAnswer: {
+    pendingCorrection: firstResponse.pendingCorrection!,
+    values: {
+      name: "Alice Martin",
+    },
+  },
+});
+```
+
+The router merges `values` into the pending tool call, validates again, then
+continues the normal plan -> execute -> render flow. If the answer is still not
+sufficient, it pauses again with a new `pendingCorrection` payload.
+
+### Confirmation For Sensitive Tools
+
+You can mark a tool as requiring an explicit confirmation before it executes.
+
+```typescript
+router.registerTool(
+  "remove_employee",
+  "Remove an employee from the HR database.",
+  z.object({
+    name: z.string().min(2),
+  }),
+  async ({ name }) => ({ removed: name }),
+  {
+    requiresConfirmation: true,
+    confirmationKey: "remove-employee",
+    confirmationMessage:
+      "Please confirm that you want to remove this employee.",
+  },
+);
+```
+
+Resume a confirmation-required action by sending `confirmed: true`.
+
+```typescript
+const confirmedResponse = await router.runAndRender("Yes, continue", undefined, {
+  correctionAnswer: {
+    pendingCorrection: firstResponse.pendingCorrection!,
+    confirmed: true,
+  },
+});
+```
+
+### Streaming Behavior
+
+`runAndRenderStream()` also supports this flow. When more user input is needed,
+the stream emits `needs-user-input` instead of `done`.
+
+```typescript
+for await (const event of router.runAndRenderStream("Create a new admin user")) {
+  if (event.type === "needs-user-input") {
+    console.log(event.response.pendingCorrection);
+  }
+
+  if (event.type === "render") {
+    process.stdout.write(event.delta);
+  }
+}
+```
+
+### With Or Without History
+
+This feature works without a history provider. In that case, your client must
+send the full `pendingCorrection` payload back to the server on resume.
+
+If a `historyProvider` and `conversationId` are configured, paused turns and
+follow-up clarifications are also persisted in conversation history, which makes
+multi-request audit and replay simpler.
+
+### Recommended HTTP Shape
+
+Typical server flow:
+
+1. Call `runAndRender(userPrompt, systemInstruction, { conversationId })`.
+2. If the response status is `completed`, return the rendered content.
+3. If the response status is `needs-user-input`, return `pendingCorrection` to the client.
+4. Collect the missing fields or confirmation in the client UI.
+5. Call `runAndRender(followUpPrompt, systemInstruction, { conversationId, correctionAnswer })`.
+
+This transport model is safer than keeping an in-process callback open, because
+the correction step naturally crosses the client/server boundary.
+
 ## Styling The Response
 
 If you want the generated HTML to follow a specific styling strategy, configure it
