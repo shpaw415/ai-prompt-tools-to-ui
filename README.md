@@ -167,6 +167,41 @@ The router merges `values` into the pending tool call, validates again, then
 continues the normal plan -> execute -> render flow. If the answer is still not
 sufficient, it pauses again with a new `pendingCorrection` payload.
 
+### HTML Correction Form
+
+If your router returns HTML, you can ask it to render a real correction form
+instead of a plain message block.
+
+```typescript
+const router = new AgenticRouter({
+  outputFormat: "html",
+  enableInteractiveCorrections: true,
+  interactiveCorrectionForm: {
+    callbackName: "handleAgenticCorrection",
+  },
+});
+```
+
+When a correction is required, the HTML `content` contains a `<form>` with:
+
+- `data-agentic-callback="handleAgenticCorrection"`
+- a hidden serialized `pendingCorrection` payload
+- a hidden `conversationId` field when one is available
+- visible inputs for missing required values
+- a confirmation submit button for sensitive actions
+
+The router does not own the actual browser-side JavaScript. The intended client
+flow is:
+
+1. Render the returned HTML.
+2. Find the form by class or `data-agentic-callback`.
+3. Attach your own JavaScript handler for that callback name.
+4. Read the visible form values plus the hidden `pendingCorrection` and `conversationId` fields.
+5. Send a new server request with `correctionAnswer`.
+
+This keeps the router responsible for HTML structure and resume payloads, while
+your application stays responsible for the real transport logic.
+
 ### Confirmation For Sensitive Tools
 
 You can mark a tool as requiring an explicit confirmation before it executes.

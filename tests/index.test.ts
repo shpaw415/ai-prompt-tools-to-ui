@@ -571,6 +571,83 @@ describe("AgenticRouter", () => {
 	});
 
 	/**
+	 * Covers HTML correction form rendering with client callback metadata.
+	 *
+	 * This is useful because paused correction responses should be able to render
+	 * a usable form for browser clients without forcing the router to own the
+	 * actual submit JavaScript implementation.
+	 */
+	it("renders an html correction form with callback metadata and resume payload", async () => {
+		const provider: AgenticLLMProvider = {
+			name: "interactive-html-provider",
+			model: "interactive-v1",
+			request: async (request) => {
+				if (request.phase === "plan") {
+					return {
+						phase: "plan",
+						toolCalls: [
+							{
+								toolName: "create_user",
+								rationale: "A user creation tool is required.",
+								arguments: { role: "admin" },
+							},
+						],
+					};
+				}
+
+				return {
+					phase: "render",
+					content: "unused",
+				};
+			},
+		};
+
+		const router = new AgenticRouter({
+			provider,
+			enableInteractiveCorrections: true,
+			outputFormat: "html",
+			interactiveCorrectionForm: {
+				callbackName: "handleAgenticCorrection",
+			},
+		});
+
+		router.registerTool(
+			"create_user",
+			"Create a user account.",
+			z.object({
+				name: z.string().min(2),
+				role: z.string().min(2),
+			}),
+			async (input) => input,
+		);
+
+		const response = await router.runAndRender(
+			"Create a new admin user",
+			undefined,
+			{ conversationId: "hr-thread" },
+		);
+
+		expect(response.status).toBe("needs-user-input");
+		expect(response.pendingCorrection?.form).toMatchObject({
+			callbackName: "handleAgenticCorrection",
+			pendingCorrectionFieldName: "agenticPendingCorrection",
+			conversationIdFieldName: "agenticConversationId",
+		});
+		expect(response.content).toContain(
+			'<form id="agentic-correction-create_user-1-hr-thread"',
+		);
+		expect(response.content).toContain(
+			'data-agentic-callback="handleAgenticCorrection"',
+		);
+		expect(response.content).toContain('name="agenticPendingCorrection"');
+		expect(response.content).toContain(
+			'name="agenticConversationId" value="hr-thread"',
+		);
+		expect(response.content).toContain('name="name"');
+		expect(response.content).not.toContain("onsubmit=");
+	});
+
+	/**
 	 * Covers the interactive correction flow for missing tool arguments.
 	 *
 	 * This is useful because the planner may identify the right tool before it has

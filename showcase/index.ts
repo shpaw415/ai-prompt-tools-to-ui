@@ -28,6 +28,9 @@ initializeDatabase(database);
 const router = new AgenticRouter({
 	useStreaming: true,
 	enableInteractiveCorrections: true,
+	interactiveCorrectionForm: {
+		callbackName: "handleAgenticCorrection",
+	},
 	outputFormat: "html",
 	renderStyle: "inline-css",
 	renderStyleInstruction:

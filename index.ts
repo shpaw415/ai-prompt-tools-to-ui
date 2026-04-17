@@ -53,12 +53,32 @@ export interface AgenticPendingCorrection {
 	iteration: number;
 	confirmationKey?: string;
 	confirmationMessage?: string;
+	form?: AgenticCorrectionFormMetadata;
 }
 
 export interface AgenticCorrectionAnswer {
 	pendingCorrection: AgenticPendingCorrection;
 	values?: Record<string, unknown>;
 	confirmed?: boolean;
+}
+
+export interface AgenticInteractiveCorrectionFormOptions {
+	callbackName: string;
+	pendingCorrectionFieldName?: string;
+	conversationIdFieldName?: string;
+	confirmedFieldName?: string;
+	submitLabel?: string;
+	confirmLabel?: string;
+}
+
+export interface AgenticCorrectionFormMetadata {
+	callbackName: string;
+	formId: string;
+	pendingCorrectionFieldName: string;
+	conversationIdFieldName: string;
+	confirmedFieldName: string;
+	submitLabel: string;
+	confirmLabel: string;
 }
 
 interface ResolvedAgenticRouterOptions {
@@ -68,6 +88,7 @@ interface ResolvedAgenticRouterOptions {
 	renderStyleInstruction?: string;
 	historyProvider?: AgenticConversationHistoryProvider;
 	enableInteractiveCorrections: boolean;
+	interactiveCorrectionForm?: AgenticInteractiveCorrectionFormOptions;
 	includeHistoryInPlanning: boolean;
 	historyWindowSize: number;
 	maxIterations: number;
@@ -244,6 +265,14 @@ export interface AgenticRouterOptions {
 	 */
 	enableInteractiveCorrections?: boolean;
 	/**
+	 * Optional HTML form metadata for paused correction responses.
+	 *
+	 * When configured and the router outputs HTML, paused correction responses
+	 * render a real form element with callback metadata so the client can attach
+	 * its own JavaScript submit handler.
+	 */
+	interactiveCorrectionForm?: AgenticInteractiveCorrectionFormOptions;
+	/**
 	 * Optional styling strategy requested from the render model.
 	 *
 	 * This influences how HTML output should be styled, for example with
@@ -292,6 +321,7 @@ export interface AgenticRouterOptions {
 export interface AgenticToolExecutionContext {
 	prompt: string;
 	systemInstruction?: string;
+	conversationId?: string;
 	iteration: number;
 	outputFormat: AgenticOutputFormat;
 	toolResults: readonly AgenticToolExecutionResult[];
@@ -744,6 +774,7 @@ export class AgenticRouter {
 				{
 					prompt: effectivePrompt,
 					systemInstruction: effectiveSystemInstruction,
+					conversationId: runOptions.conversationId,
 					iteration: runOptions.correctionAnswer.pendingCorrection.iteration,
 					outputFormat: this.options.outputFormat,
 					toolResults,
@@ -809,6 +840,7 @@ export class AgenticRouter {
 				const execution = await this._tryExecutePlannedToolCall(toolCall, {
 					prompt: effectivePrompt,
 					systemInstruction: effectiveSystemInstruction,
+					conversationId: runOptions.conversationId,
 					iteration: iterations,
 					outputFormat: this.options.outputFormat,
 					toolResults,
@@ -1020,6 +1052,7 @@ export class AgenticRouter {
 				response: this._buildPausedResponse(
 					pendingCorrection,
 					context.toolResults,
+					context.conversationId,
 				),
 			};
 		}
@@ -1054,6 +1087,7 @@ export class AgenticRouter {
 					response: this._buildPausedResponse(
 						this._createValidationCorrection(plan, context, validation.error),
 						context.toolResults,
+						context.conversationId,
 					),
 				};
 			}
@@ -1071,6 +1105,7 @@ export class AgenticRouter {
 				response: this._buildPausedResponse(
 					this._createConfirmationCorrection(plan, context, definition.options),
 					context.toolResults,
+					context.conversationId,
 				),
 			};
 		}
@@ -1148,24 +1183,45 @@ export class AgenticRouter {
 	private _buildPausedResponse(
 		pendingCorrection: AgenticPendingCorrection,
 		toolCalls: readonly AgenticToolExecutionResult[],
+		conversationId?: string,
 	): AgenticRouterResponse {
+		const resolvedPendingCorrection = this._decoratePendingCorrection(
+			pendingCorrection,
+			conversationId,
+		);
+
 		return {
 			status: "needs-user-input",
 			model: this.options.model,
 			format: this.options.outputFormat,
-			prompt: pendingCorrection.originalPrompt,
-			systemInstruction: pendingCorrection.originalSystemInstruction,
-			content: this._renderPausedResponseContent(pendingCorrection),
+			prompt: resolvedPendingCorrection.originalPrompt,
+			systemInstruction: resolvedPendingCorrection.originalSystemInstruction,
+			content: this._renderPausedResponseContent(
+				resolvedPendingCorrection,
+				conversationId,
+			),
 			toolCalls: [...toolCalls],
-			iterations: pendingCorrection.iteration,
-			pendingCorrection,
+			iterations: resolvedPendingCorrection.iteration,
+			pendingCorrection: resolvedPendingCorrection,
 		};
 	}
 
 	private _renderPausedResponseContent(
 		pendingCorrection: AgenticPendingCorrection,
+		conversationId?: string,
 	): string {
 		if (this.options.outputFormat === "html") {
+			const correctionForm = this.options.interactiveCorrectionForm;
+
+			if (correctionForm) {
+				return this._renderPausedResponseForm(
+					pendingCorrection,
+					conversationId,
+					pendingCorrection.form ??
+						this._buildCorrectionFormMetadata(pendingCorrection),
+				);
+			}
+
 			const fields = pendingCorrection.fields.length
 				? `<ul>${pendingCorrection.fields
 						.map((field) => {
@@ -1195,6 +1251,110 @@ export class AgenticRouter {
 				return `- ${field.name}: ${field.message}`;
 			}),
 		].join("\n");
+	}
+
+	private _decoratePendingCorrection(
+		pendingCorrection: AgenticPendingCorrection,
+		conversationId?: string,
+	): AgenticPendingCorrection {
+		if (
+			this.options.outputFormat !== "html" ||
+			!this.options.interactiveCorrectionForm
+		) {
+			return pendingCorrection;
+		}
+
+		return {
+			...pendingCorrection,
+			form:
+				pendingCorrection.form ??
+				this._buildCorrectionFormMetadata(pendingCorrection, conversationId),
+		};
+	}
+
+	private _buildCorrectionFormMetadata(
+		pendingCorrection: AgenticPendingCorrection,
+		conversationId?: string,
+	): AgenticCorrectionFormMetadata {
+		const formOptions = this.options.interactiveCorrectionForm;
+
+		if (!formOptions) {
+			throw new Error(
+				"Interactive correction form metadata requested without router configuration.",
+			);
+		}
+
+		const safeToolName = pendingCorrection.toolCall.toolName
+			.replace(/[^a-z0-9_-]+/gi, "-")
+			.replace(/^-+|-+$/g, "")
+			.toLowerCase();
+		const conversationSuffix = conversationId
+			? `-${conversationId
+					.replace(/[^a-z0-9_-]+/gi, "-")
+					.replace(/^-+|-+$/g, "")
+					.toLowerCase()}`
+			: "";
+
+		return {
+			callbackName: formOptions.callbackName,
+			formId: `agentic-correction-${safeToolName || "form"}-${pendingCorrection.iteration}${conversationSuffix}`,
+			pendingCorrectionFieldName:
+				formOptions.pendingCorrectionFieldName ?? "agenticPendingCorrection",
+			conversationIdFieldName:
+				formOptions.conversationIdFieldName ?? "agenticConversationId",
+			confirmedFieldName: formOptions.confirmedFieldName ?? "agenticConfirmed",
+			submitLabel: formOptions.submitLabel ?? "Continue",
+			confirmLabel: formOptions.confirmLabel ?? "Confirm",
+		};
+	}
+
+	private _renderPausedResponseForm(
+		pendingCorrection: AgenticPendingCorrection,
+		conversationId: string | undefined,
+		form: AgenticCorrectionFormMetadata,
+	): string {
+		const visibleFields =
+			pendingCorrection.reason === "validation-required"
+				? pendingCorrection.fields
+						.map((field) => {
+							return [
+								'    <label class="agentic-correction-field">',
+								`      <span>${escapeHtml(field.name)}</span>`,
+								`      <input type="text" name="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.message)}" />`,
+								"    </label>",
+							].join("\n");
+						})
+						.join("\n")
+				: "";
+		const hiddenInputs = [
+			`    <input type="hidden" name="${escapeHtml(form.pendingCorrectionFieldName)}" value="${escapeHtml(JSON.stringify(pendingCorrection))}" />`,
+			`    <input type="hidden" name="${escapeHtml(form.conversationIdFieldName)}" value="${escapeHtml(conversationId ?? "")}" />`,
+			pendingCorrection.reason === "confirmation-required"
+				? `    <input type="hidden" name="${escapeHtml(form.confirmedFieldName)}" value="true" />`
+				: "",
+		]
+			.filter(Boolean)
+			.join("\n");
+		const submitLabel =
+			pendingCorrection.reason === "confirmation-required"
+				? form.confirmLabel
+				: form.submitLabel;
+
+		return [
+			'<article class="agentic-ui agentic-ui-correction">',
+			"  <header>",
+			"    <h1>Additional Input Required</h1>",
+			`    <p>${escapeHtml(pendingCorrection.message)}</p>`,
+			"  </header>",
+			`  <form id="${escapeHtml(form.formId)}" class="agentic-correction-form" data-agentic-callback="${escapeHtml(form.callbackName)}" data-agentic-reason="${escapeHtml(pendingCorrection.reason)}" data-agentic-tool-name="${escapeHtml(pendingCorrection.toolCall.toolName)}">`,
+			hiddenInputs,
+			visibleFields,
+			`    <button type="submit">${escapeHtml(submitLabel)}</button>`,
+			"  </form>",
+			"</article>",
+		]
+			.filter(Boolean)
+			.join("\n");
 	}
 }
 
