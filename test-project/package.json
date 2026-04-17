@@ -1,0 +1,19 @@
+{
+	"name": "test-project",
+	"module": "index.ts",
+	"type": "module",
+	"private": true,
+	"devDependencies": {
+		"@types/bun": "latest"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"frame-master": "3.1.1"
+	},
+	"scripts": {
+		"serve:out": "bun run output.html --port 3001",
+		"prompt": "bun run index.ts"
+	}
+}

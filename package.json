@@ -1,0 +1,28 @@
+{
+	"name": "@frame-master/plugin-agentic-ui",
+	"version": "0.1.0",
+	"description": "Agentic Router plugin for Frame-Master with mock LLM-driven tool orchestration and generative UI output.",
+	"type": "module",
+	"main": "./index.ts",
+	"module": "./index.ts",
+	"exports": {
+		".": "./index.ts",
+		"./provider/openai": "./provider/openai.ts",
+		"./provider/google": "./provider/google.ts",
+		"./provider/anthropic": "./provider/anthropic.ts",
+		"./provider/antropics": "./provider/antropics.ts",
+		"./provider/github": "./provider/github.ts",
+		"./provider/copilot": "./provider/copilot.ts"
+	},
+	"dependencies": {
+		"zod": "^4.3.6"
+	},
+	"peerDependencies": {
+		"frame-master": "^3.1.1",
+		"typescript": "^5"
+	},
+	"private": false,
+	"devDependencies": {
+		"@types/bun": "latest"
+	}
+}
