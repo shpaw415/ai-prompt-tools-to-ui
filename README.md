@@ -1,8 +1,8 @@
-# AI-prompt-tools-to-UI
+# AI-prompt-tools
 
 Tool-first agentic router for Frame-Master and Bun apps.
 
-The package plans tool calls with a pluggable LLM provider, executes your registered tools, then returns a grounded plain-text summary plus the raw tool results. It no longer generates HTML or Markdown views. The focus is tool orchestration, modular providers, streaming, and pause/resume corrections.
+The package plans tool calls with a pluggable LLM provider, executes your registered tools, then returns a grounded plain-text summary plus the raw tool results.
 
 ## Installation
 
