@@ -84,6 +84,8 @@ export function createAgenticFlowServerAdapter(
 				{
 					conversationId: request.conversationId,
 					correctionAnswer: request.correctionAnswer,
+					frontendTools: request.frontendTools,
+					frontendToolResult: request.frontendToolResult,
 				},
 			);
 
@@ -101,6 +103,8 @@ export function createAgenticFlowServerAdapter(
 				{
 					conversationId: request.conversationId,
 					correctionAnswer: request.correctionAnswer,
+					frontendTools: request.frontendTools,
+					frontendToolResult: request.frontendToolResult,
 				},
 			)) {
 				yield {

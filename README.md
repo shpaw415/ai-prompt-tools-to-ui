@@ -183,6 +183,64 @@ The package ships with:
 
 These adapters preserve the same summary-plus-tool-results contract used by the core router.
 
+### Frontend tool usage (client SDK)
+
+The browser client can register local frontend tools, expose their descriptors to the planner, and auto-resume when the router pauses for a frontend tool call.
+
+```typescript
+import { z } from "ai-prompt-tools";
+import {
+  AgenticFlowClient,
+  createFetchAgenticFlowTransport,
+} from "ai-prompt-tools/client";
+
+const transport = createFetchAgenticFlowTransport({
+  baseUrl: "/api/flow",
+});
+
+const client = new AgenticFlowClient({
+  transport,
+  autoResumeFrontendTools: true,
+  localTools: [
+    {
+      name: "format_currency",
+      description: "Format amounts with Intl in the browser runtime.",
+      schema: z.object({
+        amount: z.number(),
+        currency: z.string().min(3),
+      }),
+      handler: ({ amount, currency }) => {
+        return new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency,
+        }).format(amount);
+      },
+    },
+  ],
+});
+
+const response = await client.run("show payroll in euro");
+console.log(response.content);
+```
+
+By default, auto-resume is enabled. To require explicit UI confirmation before resuming a frontend tool call, disable it and call `resumeFrontendTool()` yourself:
+
+```typescript
+const client = new AgenticFlowClient({
+  transport,
+  autoResumeFrontendTools: false,
+});
+
+const first = await client.run("show payroll in euro");
+
+if (first.status === "needs-user-input" && first.pendingFrontendToolCall) {
+  const resumed = await client.resumeFrontendTool({
+    pendingFrontendToolCall: first.pendingFrontendToolCall,
+  });
+  console.log(resumed.content);
+}
+```
+
 ## Providers
 
 Built-in provider factories:

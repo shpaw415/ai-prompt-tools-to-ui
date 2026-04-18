@@ -283,7 +283,15 @@ export function normalizePlanResponse(
 	};
 }
 
-export function buildToolJsonSchema(schema: ZodTypeAny): AgenticJsonSchema {
+export function buildToolJsonSchema(schema: unknown): AgenticJsonSchema {
+	if (isAgenticJsonSchema(schema)) {
+		return schema;
+	}
+
+	if (!(schema instanceof z.ZodType)) {
+		return {};
+	}
+
 	const baseSchema = unwrapSchema(schema);
 
 	if (baseSchema instanceof z.ZodString) {
@@ -470,7 +478,7 @@ function describeTools(tools: readonly AgenticLLMToolDescriptor[]): unknown[] {
 	});
 }
 
-function describeSchema(schema: ZodTypeAny): unknown {
+function describeSchema(schema: unknown): unknown {
 	const jsonSchema = buildToolJsonSchema(schema);
 
 	if (jsonSchema.enum?.length) {
@@ -509,6 +517,51 @@ function unwrapSchema(schema: ZodTypeAny): ZodTypeAny {
 	}
 
 	return schema;
+}
+
+function isAgenticJsonSchema(schema: unknown): schema is AgenticJsonSchema {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+		return false;
+	}
+
+	const candidate = schema as AgenticJsonSchema;
+
+	if (candidate.type && typeof candidate.type !== "string") {
+		return false;
+	}
+
+	if (candidate.description && typeof candidate.description !== "string") {
+		return false;
+	}
+
+	if (
+		candidate.required &&
+		(!Array.isArray(candidate.required) ||
+			candidate.required.some((entry) => typeof entry !== "string"))
+	) {
+		return false;
+	}
+
+	if (
+		candidate.enum &&
+		(!Array.isArray(candidate.enum) ||
+			candidate.enum.some((entry) => typeof entry !== "string"))
+	) {
+		return false;
+	}
+
+	if (
+		candidate.additionalProperties !== undefined &&
+		typeof candidate.additionalProperties !== "boolean"
+	) {
+		return false;
+	}
+
+	if (candidate.properties && typeof candidate.properties !== "object") {
+		return false;
+	}
+
+	return true;
 }
 
 function isOptionalSchema(schema: ZodTypeAny): boolean {

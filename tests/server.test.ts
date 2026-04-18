@@ -13,6 +13,8 @@ describe("createAgenticFlowServerAdapter", () => {
 			systemInstruction?: string;
 			conversationId?: string;
 			correctionAnswer?: AgenticCorrectionAnswer;
+			frontendTools?: readonly unknown[];
+			frontendToolResult?: unknown;
 		}> = [];
 		const adapter = createAgenticFlowServerAdapter({
 			router: {
@@ -22,6 +24,8 @@ describe("createAgenticFlowServerAdapter", () => {
 						systemInstruction,
 						conversationId: runOptions?.conversationId,
 						correctionAnswer: runOptions?.correctionAnswer,
+						frontendTools: runOptions?.frontendTools,
+						frontendToolResult: runOptions?.frontendToolResult,
 					});
 
 					return createResponse({
@@ -40,11 +44,38 @@ describe("createAgenticFlowServerAdapter", () => {
 		});
 
 		const correctionAnswer = createCorrectionAnswer();
+		const frontendTools = [
+			{
+				name: "format_currency",
+				description: "Format currency on frontend.",
+				schema: {
+					type: "object",
+					properties: {
+						amount: { type: "number" },
+					},
+					required: ["amount"],
+				},
+			},
+		];
+		const frontendToolResult = {
+			pendingFrontendToolCall: {
+				toolCall: {
+					toolName: "format_currency",
+					rationale: "Need frontend locale formatting.",
+					arguments: { amount: 10 },
+				},
+				originalPrompt: "show payroll",
+				iteration: 1,
+			},
+			result: "$10.00",
+		};
 		const envelope = await adapter.run({
 			prompt: "Show the sales dashboard",
 			systemInstruction: "Use tools before guessing.",
 			conversationId: "sales-thread",
 			correctionAnswer,
+			frontendTools,
+			frontendToolResult,
 		});
 
 		expect(observedCalls).toEqual([
@@ -53,6 +84,8 @@ describe("createAgenticFlowServerAdapter", () => {
 				systemInstruction: "Use tools before guessing.",
 				conversationId: "sales-thread",
 				correctionAnswer,
+				frontendTools,
+				frontendToolResult,
 			},
 		]);
 		expect(envelope).toMatchObject({

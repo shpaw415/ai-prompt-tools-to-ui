@@ -1,7 +1,11 @@
-import { iterateSSEMessages } from "../provider/shared";
+import { iterateSSEMessages, buildToolJsonSchema } from "../provider/shared";
+import { z, type ZodTypeAny } from "zod";
 import type {
 	AgenticCorrectionAnswer,
+	AgenticFrontendToolDescriptor,
+	AgenticFrontendToolResultAnswer,
 	AgenticPendingCorrection,
+	AgenticPendingFrontendToolCall,
 	AgenticRouterResponse,
 	AgenticRouterStreamEvent,
 	AgenticToolCallPlan,
@@ -10,7 +14,10 @@ import type {
 
 export type {
 	AgenticCorrectionAnswer,
+	AgenticFrontendToolDescriptor,
+	AgenticFrontendToolResultAnswer,
 	AgenticPendingCorrection,
+	AgenticPendingFrontendToolCall,
 	AgenticRouterResponse,
 	AgenticRouterStreamEvent,
 	AgenticToolCallPlan,
@@ -27,6 +34,8 @@ export interface AgenticFlowRequest {
 	systemInstruction?: string;
 	conversationId?: string;
 	correctionAnswer?: AgenticCorrectionAnswer;
+	frontendTools?: readonly AgenticFrontendToolDescriptor[];
+	frontendToolResult?: AgenticFrontendToolResultAnswer;
 }
 
 export interface AgenticFlowRunResponseEnvelope {
@@ -85,14 +94,38 @@ export interface AgenticFlowState {
 	plannedToolCalls: AgenticToolCallPlan[];
 	toolCalls: AgenticToolExecutionResult[];
 	pendingCorrection?: AgenticPendingCorrection;
+	pendingFrontendToolCall?: AgenticPendingFrontendToolCall;
 	lastResponse?: AgenticRouterResponse;
 	error?: Error;
+}
+
+export interface AgenticFrontendLocalTool<
+	Schema extends ZodTypeAny = ZodTypeAny,
+	Result = unknown,
+> {
+	name: string;
+	description: string;
+	schema: Schema;
+	handler: (
+		input: z.output<Schema>,
+		context: AgenticFrontendToolExecutionContext,
+	) => Promise<Result> | Result;
+}
+
+export interface AgenticFrontendToolExecutionContext {
+	prompt: string;
+	conversationId?: string;
+	iteration: number;
+	toolCalls: readonly AgenticToolExecutionResult[];
 }
 
 export interface AgenticFlowClientOptions {
 	transport: AgenticFlowTransport;
 	conversationId?: string;
 	createConversationId?: () => string;
+	localTools?: readonly AgenticFrontendLocalTool<ZodTypeAny, unknown>[];
+	autoResumeFrontendTools?: boolean;
+	maxFrontendToolAutoResumes?: number;
 }
 
 export interface AgenticFlowRunOptions {
@@ -100,10 +133,13 @@ export interface AgenticFlowRunOptions {
 	systemInstruction?: string;
 	signal?: AbortSignal;
 	resetContent?: boolean;
+	autoResumeFrontendTools?: boolean;
+	maxFrontendToolAutoResumes?: number;
 }
 
 interface InternalAgenticFlowRunOptions extends AgenticFlowRunOptions {
 	correctionAnswer?: AgenticCorrectionAnswer;
+	frontendToolResult?: AgenticFrontendToolResultAnswer;
 }
 
 export interface AgenticFlowResumeOptions {
@@ -111,6 +147,14 @@ export interface AgenticFlowResumeOptions {
 	values?: Record<string, unknown>;
 	confirmed?: boolean;
 	prompt?: string;
+	conversationId?: string;
+	systemInstruction?: string;
+	signal?: AbortSignal;
+	resetContent?: boolean;
+}
+
+export interface AgenticFlowResumeFrontendToolOptions {
+	pendingFrontendToolCall?: AgenticPendingFrontendToolCall;
 	conversationId?: string;
 	systemInstruction?: string;
 	signal?: AbortSignal;
@@ -129,6 +173,12 @@ export class AgenticFlowClient {
 
 	private readonly createConversationIdValue: () => string;
 
+	private readonly autoResumeFrontendToolsByDefault: boolean;
+
+	private readonly maxFrontendToolAutoResumesByDefault: number;
+
+	private readonly localTools = new Map<string, AgenticFrontendLocalTool>();
+
 	private state: AgenticFlowState;
 
 	private readonly listeners = new Set<(state: AgenticFlowState) => void>();
@@ -137,10 +187,33 @@ export class AgenticFlowClient {
 		this.transport = options.transport;
 		this.createConversationIdValue =
 			options.createConversationId ?? createDefaultConversationId;
+		this.autoResumeFrontendToolsByDefault =
+			options.autoResumeFrontendTools ?? true;
+		this.maxFrontendToolAutoResumesByDefault =
+			options.maxFrontendToolAutoResumes ?? 8;
+
+		if (this.maxFrontendToolAutoResumesByDefault <= 0) {
+			throw new Error("maxFrontendToolAutoResumes must be greater than 0.");
+		}
+
+		for (const tool of options.localTools ?? []) {
+			this.localTools.set(tool.name, tool);
+		}
 		this.state = {
 			...DEFAULT_STATE,
 			conversationId: options.conversationId,
 		};
+	}
+
+	registerFrontendTool<Schema extends ZodTypeAny, Result = unknown>(
+		tool: AgenticFrontendLocalTool<Schema, Result>,
+	): this {
+		if (!tool.name.trim()) {
+			throw new Error("Frontend tool name must be a non-empty string.");
+		}
+
+		this.localTools.set(tool.name, tool);
+		return this;
 	}
 
 	getState(): AgenticFlowState {
@@ -184,26 +257,53 @@ export class AgenticFlowClient {
 		prompt: string,
 		options: AgenticFlowRunOptions = {},
 	): Promise<AgenticRouterResponse> {
-		const request = this.createRequest(prompt, options);
+		let request = this.createRequest(prompt, options);
+		const autoResumeOptions =
+			this.resolveFrontendToolAutoResumeOptions(options);
+		let autoResumeCount = 0;
+
 		this.beginRequest(request, {
 			status: "running",
 			resetContent: options.resetContent ?? true,
 		});
 
 		try {
-			const envelope = normalizeRunResponse(
-				await this.transport.run(request, {
-					signal: options.signal,
-				}),
-			);
-			const response = envelope.response;
+			while (true) {
+				const envelope = normalizeRunResponse(
+					await this.transport.run(request, {
+						signal: options.signal,
+					}),
+				);
+				const response = envelope.response;
+				const conversationId =
+					envelope.conversationId ?? request.conversationId;
 
-			this.completeResponse(
-				response,
-				envelope.conversationId ?? request.conversationId,
-			);
+				if (
+					this.shouldAutoResumeFrontendTool(
+						response,
+						autoResumeOptions,
+						autoResumeCount,
+					)
+				) {
+					autoResumeCount += 1;
+					const frontendToolResult = await this.executeFrontendTool(
+						response.pendingFrontendToolCall,
+					);
+					request = this.createRequest(
+						response.pendingFrontendToolCall.originalPrompt,
+						{
+							conversationId,
+							systemInstruction:
+								response.pendingFrontendToolCall.originalSystemInstruction,
+							frontendToolResult,
+						},
+					);
+					continue;
+				}
 
-			return response;
+				this.completeResponse(response, conversationId);
+				return response;
+			}
 		} catch (error) {
 			throw this.failRequest(error, request.conversationId);
 		}
@@ -222,35 +322,89 @@ export class AgenticFlowClient {
 			return response;
 		}
 
-		const request = this.createRequest(prompt, options);
+		let request = this.createRequest(prompt, options);
+		const autoResumeOptions =
+			this.resolveFrontendToolAutoResumeOptions(options);
+		let autoResumeCount = 0;
 		this.beginRequest(request, {
 			status: "streaming",
 			resetContent: options.resetContent ?? true,
 		});
 
 		try {
-			let finalResponse: AgenticRouterResponse | undefined;
+			while (true) {
+				let finalResponse: AgenticRouterResponse | undefined;
+				let finalConversationId = request.conversationId;
 
-			for await (const item of this.transport.stream(request, {
-				signal: options.signal,
-			})) {
-				const envelope = normalizeStreamEvent(item);
-				const conversationId =
-					envelope.conversationId ?? request.conversationId;
+				for await (const item of this.transport.stream(request, {
+					signal: options.signal,
+				})) {
+					const envelope = normalizeStreamEvent(item);
+					const conversationId =
+						envelope.conversationId ?? request.conversationId;
+					finalConversationId = conversationId;
 
-				this.applyStreamEvent(envelope.event, conversationId, request);
-				if (envelope.event.type === "done") {
-					finalResponse = envelope.event.response;
+					this.applyStreamEvent(envelope.event, conversationId, request);
+
+					if (envelope.event.type === "needs-user-input") {
+						finalResponse = envelope.event.response;
+
+						if (
+							this.shouldAutoResumeFrontendTool(
+								envelope.event.response,
+								autoResumeOptions,
+								autoResumeCount,
+							)
+						) {
+							continue;
+						}
+					}
+
+					if (envelope.event.type === "done") {
+						finalResponse = envelope.event.response;
+					}
+
+					yield envelope.event;
 				}
 
-				yield envelope.event;
-			}
+				if (!finalResponse) {
+					throw new Error("Stream completed without a final response event.");
+				}
 
-			if (!finalResponse) {
-				throw new Error("Stream completed without a final done event.");
-			}
+				if (
+					this.shouldAutoResumeFrontendTool(
+						finalResponse,
+						autoResumeOptions,
+						autoResumeCount,
+					)
+				) {
+					autoResumeCount += 1;
+					const frontendToolResult = await this.executeFrontendTool(
+						finalResponse.pendingFrontendToolCall,
+					);
+					request = this.createRequest(
+						finalResponse.pendingFrontendToolCall.originalPrompt,
+						{
+							conversationId: finalConversationId,
+							systemInstruction:
+								finalResponse.pendingFrontendToolCall.originalSystemInstruction,
+							frontendToolResult,
+						},
+					);
+					this.updateState({
+						status: "streaming",
+						conversationId: finalConversationId,
+						activePrompt: request.prompt,
+						systemInstruction: request.systemInstruction,
+						pendingCorrection: undefined,
+						pendingFrontendToolCall: undefined,
+						error: undefined,
+					});
+					continue;
+				}
 
-			return finalResponse;
+				return finalResponse;
+			}
 		} catch (error) {
 			throw this.failRequest(error, request.conversationId);
 		}
@@ -306,6 +460,57 @@ export class AgenticFlowClient {
 		return this.state.lastResponse as AgenticRouterResponse;
 	}
 
+	async resumeFrontendTool(
+		options: AgenticFlowResumeFrontendToolOptions = {},
+	): Promise<AgenticRouterResponse> {
+		const pendingFrontendToolCall = this.resolvePendingFrontendToolCall(
+			options.pendingFrontendToolCall,
+		);
+		const frontendToolResult = await this.executeFrontendTool(
+			pendingFrontendToolCall,
+		);
+
+		return this.run(pendingFrontendToolCall.originalPrompt, {
+			conversationId:
+				options.conversationId ?? this.state.conversationId ?? undefined,
+			systemInstruction:
+				options.systemInstruction ??
+				pendingFrontendToolCall.originalSystemInstruction,
+			signal: options.signal,
+			resetContent: options.resetContent,
+			frontendToolResult,
+		} satisfies InternalAgenticFlowRunOptions);
+	}
+
+	async *resumeFrontendToolStream(
+		options: AgenticFlowResumeFrontendToolOptions = {},
+	): AsyncGenerator<AgenticRouterStreamEvent, AgenticRouterResponse, void> {
+		const pendingFrontendToolCall = this.resolvePendingFrontendToolCall(
+			options.pendingFrontendToolCall,
+		);
+		const frontendToolResult = await this.executeFrontendTool(
+			pendingFrontendToolCall,
+		);
+
+		for await (const event of this.stream(
+			pendingFrontendToolCall.originalPrompt,
+			{
+				conversationId:
+					options.conversationId ?? this.state.conversationId ?? undefined,
+				systemInstruction:
+					options.systemInstruction ??
+					pendingFrontendToolCall.originalSystemInstruction,
+				signal: options.signal,
+				resetContent: options.resetContent,
+				frontendToolResult,
+			} satisfies InternalAgenticFlowRunOptions,
+		)) {
+			yield event;
+		}
+
+		return this.state.lastResponse as AgenticRouterResponse;
+	}
+
 	async reset(
 		options: {
 			conversationId?: string;
@@ -346,6 +551,52 @@ export class AgenticFlowClient {
 		return resolved;
 	}
 
+	private resolvePendingFrontendToolCall(
+		pendingFrontendToolCall?: AgenticPendingFrontendToolCall,
+	): AgenticPendingFrontendToolCall {
+		const resolved =
+			pendingFrontendToolCall ?? this.state.pendingFrontendToolCall;
+
+		if (!resolved) {
+			throw new Error(
+				"No pending frontend tool call is available. Resume after a frontend-tool-call response or pass one explicitly.",
+			);
+		}
+
+		return resolved;
+	}
+
+	private async executeFrontendTool(
+		pendingFrontendToolCall: AgenticPendingFrontendToolCall,
+	): Promise<AgenticFrontendToolResultAnswer> {
+		const localTool = this.localTools.get(
+			pendingFrontendToolCall.toolCall.toolName,
+		);
+
+		if (!localTool) {
+			throw new Error(
+				`No frontend tool registered for ${pendingFrontendToolCall.toolCall.toolName}.`,
+			);
+		}
+
+		const startedAt = performance.now();
+		const parsed = await localTool.schema.parseAsync(
+			pendingFrontendToolCall.toolCall.arguments,
+		);
+		const result = await localTool.handler(parsed, {
+			prompt: pendingFrontendToolCall.originalPrompt,
+			conversationId: this.state.conversationId,
+			iteration: pendingFrontendToolCall.iteration,
+			toolCalls: this.state.toolCalls,
+		});
+
+		return {
+			pendingFrontendToolCall,
+			result,
+			durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+		};
+	}
+
 	private createRequest(
 		prompt: string,
 		options: InternalAgenticFlowRunOptions,
@@ -360,7 +611,19 @@ export class AgenticFlowClient {
 			systemInstruction: options.systemInstruction,
 			conversationId,
 			correctionAnswer: options.correctionAnswer,
+			frontendToolResult: options.frontendToolResult,
+			frontendTools: this.getFrontendToolDescriptors(),
 		};
+	}
+
+	private getFrontendToolDescriptors(): AgenticFrontendToolDescriptor[] {
+		return [...this.localTools.values()].map((tool) => {
+			return {
+				name: tool.name,
+				description: tool.description,
+				schema: buildToolJsonSchema(tool.schema),
+			};
+		});
 	}
 
 	private beginRequest(
@@ -379,6 +642,7 @@ export class AgenticFlowClient {
 			plannedToolCalls: [],
 			toolCalls: [],
 			pendingCorrection: undefined,
+			pendingFrontendToolCall: undefined,
 			lastResponse: undefined,
 			error: undefined,
 		});
@@ -395,6 +659,7 @@ export class AgenticFlowClient {
 			content: response.content,
 			toolCalls: [...response.toolCalls],
 			pendingCorrection: response.pendingCorrection,
+			pendingFrontendToolCall: response.pendingFrontendToolCall,
 			lastResponse: response,
 			error: undefined,
 		});
@@ -413,6 +678,19 @@ export class AgenticFlowClient {
 					activePrompt: request.prompt,
 					systemInstruction: request.systemInstruction,
 					plannedToolCalls: [...this.state.plannedToolCalls, event.toolCall],
+				});
+				return;
+			case "frontend-tool-call":
+				this.updateState({
+					status: "streaming",
+					conversationId,
+					activePrompt: request.prompt,
+					systemInstruction: request.systemInstruction,
+					plannedToolCalls: [
+						...this.state.plannedToolCalls,
+						event.pendingFrontendToolCall.toolCall,
+					],
+					pendingFrontendToolCall: event.pendingFrontendToolCall,
 				});
 				return;
 			case "tool-result":
@@ -460,12 +738,75 @@ export class AgenticFlowClient {
 			listener(snapshot);
 		}
 	}
+
+	private resolveFrontendToolAutoResumeOptions(
+		options: AgenticFlowRunOptions,
+	): {
+		enabled: boolean;
+		maxResumes: number;
+	} {
+		const enabled =
+			options.autoResumeFrontendTools ?? this.autoResumeFrontendToolsByDefault;
+		const maxResumes =
+			options.maxFrontendToolAutoResumes ??
+			this.maxFrontendToolAutoResumesByDefault;
+
+		if (maxResumes <= 0) {
+			throw new Error("maxFrontendToolAutoResumes must be greater than 0.");
+		}
+
+		return {
+			enabled,
+			maxResumes,
+		};
+	}
+
+	private shouldAutoResumeFrontendTool(
+		response: AgenticRouterResponse,
+		autoResumeOptions: {
+			enabled: boolean;
+			maxResumes: number;
+		},
+		autoResumeCount: number,
+	): response is AgenticRouterResponse & {
+		pendingFrontendToolCall: AgenticPendingFrontendToolCall;
+	} {
+		if (!autoResumeOptions.enabled) {
+			return false;
+		}
+
+		if (
+			response.status !== "needs-user-input" ||
+			!response.pendingFrontendToolCall
+		) {
+			return false;
+		}
+
+		if (autoResumeCount >= autoResumeOptions.maxResumes) {
+			throw new Error(
+				`Reached frontend tool auto-resume limit (${autoResumeOptions.maxResumes}).`,
+			);
+		}
+
+		return this.localTools.has(
+			response.pendingFrontendToolCall.toolCall.toolName,
+		);
+	}
 }
 
 export function createAgenticFlowClient(
 	options: AgenticFlowClientOptions,
 ): AgenticFlowClient {
 	return new AgenticFlowClient(options);
+}
+
+export function createAgenticFrontendTool<
+	Schema extends ZodTypeAny,
+	Result = unknown,
+>(
+	tool: AgenticFrontendLocalTool<Schema, Result>,
+): AgenticFrontendLocalTool<Schema, Result> {
+	return tool;
 }
 
 export function createFetchAgenticFlowTransport(

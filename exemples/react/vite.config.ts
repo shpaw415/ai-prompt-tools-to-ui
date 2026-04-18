@@ -5,4 +5,4 @@ export default {
 			"/api/flow": "http://localhost:3000",
 		},
 	},
-};
+} satisfies import("vite").UserConfig;

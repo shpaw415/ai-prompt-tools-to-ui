@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { z } from "../index";
 import {
 	AgenticFlowClient,
 	createFetchAgenticFlowTransport,
@@ -217,6 +218,366 @@ describe("AgenticFlowClient", () => {
 					values: { name: "Alice Martin" },
 				},
 			},
+		]);
+	});
+
+	it("registers frontend tools, sends descriptors in requests, and supports manual resume for planned frontend tool calls", async () => {
+		const requests: Array<{
+			prompt: string;
+			conversationId?: string;
+			frontendTools?: readonly { name: string; description: string }[];
+			frontendToolResult?: {
+				toolName: string;
+				arguments: Record<string, unknown>;
+				result: unknown;
+			};
+		}> = [];
+		const pendingFrontendToolCall = {
+			toolCall: {
+				toolName: "format_currency",
+				rationale: "Need locale formatting from frontend runtime.",
+				arguments: {
+					amount: 1234.5,
+					currency: "EUR",
+				},
+			},
+			originalPrompt: "show payroll in euro",
+			iteration: 1,
+		};
+		const transport: AgenticFlowTransport = {
+			async run(request) {
+				requests.push({
+					prompt: request.prompt,
+					conversationId: request.conversationId,
+					frontendTools: request.frontendTools?.map((tool) => {
+						return {
+							name: tool.name,
+							description: tool.description,
+						};
+					}),
+					frontendToolResult: request.frontendToolResult
+						? {
+								toolName:
+									request.frontendToolResult.pendingFrontendToolCall.toolCall
+										.toolName,
+								arguments:
+									request.frontendToolResult.pendingFrontendToolCall.toolCall
+										.arguments,
+								result: request.frontendToolResult.result,
+							}
+						: undefined,
+				});
+
+				if (!request.frontendToolResult) {
+					return {
+						conversationId: request.conversationId,
+						response: {
+							...createNeedsInputResponse(
+								request.prompt,
+								createPendingCorrection(),
+							),
+							pendingCorrection: undefined,
+							pendingFrontendToolCall,
+							content: "Frontend tool execution required.",
+						},
+					};
+				}
+
+				return {
+					conversationId: request.conversationId,
+					response: createResponse({
+						prompt: request.prompt,
+						content: "Payroll formatted on frontend.",
+						toolCalls: [
+							{
+								toolName: "format_currency",
+								rationale: "Need locale formatting from frontend runtime.",
+								arguments: {
+									amount: 1234.5,
+									currency: "EUR",
+								},
+								result: request.frontendToolResult.result,
+								durationMs: 1,
+							},
+						],
+					}),
+				};
+			},
+		};
+
+		const client = new AgenticFlowClient({
+			transport,
+			conversationId: "frontend-tools-thread",
+			autoResumeFrontendTools: false,
+			localTools: [
+				{
+					name: "format_currency",
+					description: "Format a currency amount using Intl on frontend.",
+					schema: z.object({
+						amount: z.number(),
+						currency: z.string().min(3),
+					}),
+					handler: ({ amount, currency }) => {
+						return new Intl.NumberFormat("en-US", {
+							style: "currency",
+							currency,
+						}).format(amount);
+					},
+				},
+			],
+		});
+
+		const first = await client.run("show payroll in euro");
+		const resumed = await client.resumeFrontendTool();
+
+		expect(first.status).toBe("needs-user-input");
+		expect(first.pendingFrontendToolCall?.toolCall.toolName).toBe(
+			"format_currency",
+		);
+		expect(resumed.content).toBe("Payroll formatted on frontend.");
+		expect(requests[0]?.frontendTools).toEqual([
+			{
+				name: "format_currency",
+				description: "Format a currency amount using Intl on frontend.",
+			},
+		]);
+		expect(requests[1]?.frontendToolResult).toMatchObject({
+			toolName: "format_currency",
+			arguments: { amount: 1234.5, currency: "EUR" },
+			result: "€1,234.50",
+		});
+	});
+
+	it("auto-resumes planned frontend tool calls during run", async () => {
+		const requests: Array<{
+			prompt: string;
+			frontendToolResult?: {
+				toolName: string;
+				result: unknown;
+			};
+		}> = [];
+		const pendingFrontendToolCall = {
+			toolCall: {
+				toolName: "format_currency",
+				rationale: "Need locale formatting from frontend runtime.",
+				arguments: { amount: 1234.5, currency: "EUR" },
+			},
+			originalPrompt: "show payroll in euro",
+			iteration: 1,
+		};
+		const transport: AgenticFlowTransport = {
+			async run(request) {
+				requests.push({
+					prompt: request.prompt,
+					frontendToolResult: request.frontendToolResult
+						? {
+								toolName:
+									request.frontendToolResult.pendingFrontendToolCall.toolCall
+										.toolName,
+								result: request.frontendToolResult.result,
+							}
+						: undefined,
+				});
+
+				if (!request.frontendToolResult) {
+					return {
+						response: {
+							status: "needs-user-input",
+							model: "test-model",
+							prompt: request.prompt,
+							content: "Frontend tool execution required.",
+							toolCalls: [],
+							iterations: 1,
+							pendingFrontendToolCall,
+						},
+					};
+				}
+
+				return {
+					response: createResponse({
+						prompt: request.prompt,
+						content: "Payroll formatted on frontend.",
+						toolCalls: [
+							{
+								toolName: "format_currency",
+								rationale: "Need locale formatting from frontend runtime.",
+								arguments: { amount: 1234.5, currency: "EUR" },
+								result: request.frontendToolResult.result,
+								durationMs: 1,
+							},
+						],
+					}),
+				};
+			},
+		};
+
+		const client = new AgenticFlowClient({
+			transport,
+			conversationId: "frontend-tools-thread",
+			localTools: [
+				{
+					name: "format_currency",
+					description: "Format a currency amount using Intl on frontend.",
+					schema: z.object({
+						amount: z.number(),
+						currency: z.string().min(3),
+					}),
+					handler: ({ amount, currency }) => {
+						return new Intl.NumberFormat("en-US", {
+							style: "currency",
+							currency,
+						}).format(amount);
+					},
+				},
+			],
+		});
+
+		const response = await client.run("show payroll in euro");
+
+		expect(response.status).toBe("completed");
+		expect(response.content).toBe("Payroll formatted on frontend.");
+		expect(requests).toHaveLength(2);
+		expect(requests[0]?.frontendToolResult).toBeUndefined();
+		expect(requests[1]?.frontendToolResult).toEqual({
+			toolName: "format_currency",
+			result: "€1,234.50",
+		});
+	});
+
+	it("auto-resumes planned frontend tool calls during stream", async () => {
+		const requests: Array<{
+			prompt: string;
+			frontendToolResult?: {
+				toolName: string;
+			};
+		}> = [];
+		const emittedEvents: AgenticRouterStreamEvent[] = [];
+		const pendingFrontendToolCall = {
+			toolCall: {
+				toolName: "format_currency",
+				rationale: "Need locale formatting from frontend runtime.",
+				arguments: { amount: 1234.5, currency: "EUR" },
+			},
+			originalPrompt: "show payroll in euro",
+			iteration: 1,
+		};
+		const transport: AgenticFlowTransport = {
+			async run() {
+				throw new Error("run should not be used in this test");
+			},
+			async *stream(request) {
+				requests.push({
+					prompt: request.prompt,
+					frontendToolResult: request.frontendToolResult
+						? {
+								toolName:
+									request.frontendToolResult.pendingFrontendToolCall.toolCall
+										.toolName,
+							}
+						: undefined,
+				});
+
+				if (!request.frontendToolResult) {
+					yield {
+						event: {
+							type: "frontend-tool-call",
+							iteration: 1,
+							pendingFrontendToolCall,
+						},
+					};
+					yield {
+						event: {
+							type: "needs-user-input",
+							response: {
+								status: "needs-user-input",
+								model: "test-model",
+								prompt: request.prompt,
+								content: "Frontend tool execution required.",
+								toolCalls: [],
+								iterations: 1,
+								pendingFrontendToolCall,
+							},
+						},
+					};
+					return;
+				}
+
+				yield {
+					event: {
+						type: "tool-result",
+						iteration: 1,
+						result: {
+							toolName: "format_currency",
+							rationale: "Need locale formatting from frontend runtime.",
+							arguments: { amount: 1234.5, currency: "EUR" },
+							result: "€1,234.50",
+							durationMs: 1,
+						},
+					},
+				};
+				yield {
+					event: {
+						type: "response",
+						delta: "Payroll formatted on frontend.",
+						content: "Payroll formatted on frontend.",
+					},
+				};
+				yield {
+					event: {
+						type: "done",
+						response: createResponse({
+							prompt: request.prompt,
+							content: "Payroll formatted on frontend.",
+							toolCalls: [
+								{
+									toolName: "format_currency",
+									rationale: "Need locale formatting from frontend runtime.",
+									arguments: { amount: 1234.5, currency: "EUR" },
+									result: "€1,234.50",
+									durationMs: 1,
+								},
+							],
+						}),
+					},
+				};
+			},
+		};
+
+		const client = new AgenticFlowClient({
+			transport,
+			conversationId: "frontend-tools-stream-thread",
+			localTools: [
+				{
+					name: "format_currency",
+					description: "Format a currency amount using Intl on frontend.",
+					schema: z.object({
+						amount: z.number(),
+						currency: z.string().min(3),
+					}),
+					handler: ({ amount, currency }) => {
+						return new Intl.NumberFormat("en-US", {
+							style: "currency",
+							currency,
+						}).format(amount);
+					},
+				},
+			],
+		});
+
+		for await (const event of client.stream("show payroll in euro")) {
+			emittedEvents.push(event);
+		}
+
+		expect(requests).toHaveLength(2);
+		expect(requests[0]?.frontendToolResult).toBeUndefined();
+		expect(requests[1]?.frontendToolResult).toEqual({
+			toolName: "format_currency",
+		});
+		expect(emittedEvents.map((event) => event.type)).toEqual([
+			"frontend-tool-call",
+			"tool-result",
+			"response",
+			"done",
 		]);
 	});
 });

@@ -26,6 +26,8 @@ export interface AgenticConversationHistoryProvider {
 export interface AgenticRunOptions {
 	conversationId?: string;
 	correctionAnswer?: AgenticCorrectionAnswer;
+	frontendTools?: readonly AgenticFrontendToolDescriptor[];
+	frontendToolResult?: AgenticFrontendToolResultAnswer;
 }
 
 export type AgenticRouterStatus = "completed" | "needs-user-input";
@@ -59,6 +61,25 @@ export interface AgenticCorrectionAnswer {
 	confirmed?: boolean;
 }
 
+export interface AgenticFrontendToolDescriptor {
+	name: string;
+	description: string;
+	schema: Record<string, unknown>;
+}
+
+export interface AgenticPendingFrontendToolCall {
+	toolCall: AgenticToolCallPlan;
+	originalPrompt: string;
+	originalSystemInstruction?: string;
+	iteration: number;
+}
+
+export interface AgenticFrontendToolResultAnswer {
+	pendingFrontendToolCall: AgenticPendingFrontendToolCall;
+	result: unknown;
+	durationMs?: number;
+}
+
 interface ResolvedAgenticRouterOptions {
 	model: string;
 	responseResolver?: AgenticResponseResolver;
@@ -74,9 +95,7 @@ interface ResolvedAgenticRouterOptions {
 /**
  * Provider-facing tool descriptor stripped from runtime handlers.
  */
-export interface AgenticLLMToolDescriptor<
-	Schema extends ZodTypeAny = ZodTypeAny,
-> {
+export interface AgenticLLMToolDescriptor<Schema = unknown> {
 	name: string;
 	description: string;
 	schema: Schema;
@@ -163,6 +182,11 @@ export type AgenticRouterStreamEvent =
 			type: "tool-call";
 			iteration: number;
 			toolCall: AgenticToolCallPlan;
+	  }
+	| {
+			type: "frontend-tool-call";
+			iteration: number;
+			pendingFrontendToolCall: AgenticPendingFrontendToolCall;
 	  }
 	| {
 			type: "tool-result";
@@ -351,6 +375,7 @@ export interface AgenticRouterResponse {
 	toolCalls: AgenticToolExecutionResult[];
 	iterations: number;
 	pendingCorrection?: AgenticPendingCorrection;
+	pendingFrontendToolCall?: AgenticPendingFrontendToolCall;
 }
 
 interface CompletedToolResolution {
@@ -483,6 +508,7 @@ export class AgenticRouter {
 				resolution.effectiveSystemInstruction,
 				conversationHistory,
 				resolution.toolResults,
+				runOptions.frontendTools,
 			),
 		);
 
@@ -552,6 +578,7 @@ export class AgenticRouter {
 			resolution.effectiveSystemInstruction,
 			conversationHistory,
 			resolution.toolResults,
+			runOptions.frontendTools,
 		);
 		const resolvedResponse =
 			await this.options.responseResolver?.(responseRequest);
@@ -683,13 +710,14 @@ export class AgenticRouter {
 		systemInstruction: string | undefined,
 		conversationHistory: readonly AgenticConversationMessage[] | undefined,
 		toolResults: readonly AgenticToolExecutionResult[],
+		frontendTools: readonly AgenticFrontendToolDescriptor[] | undefined,
 	): AgenticLLMResponseRequest {
 		return {
 			phase: "respond",
 			prompt,
 			systemInstruction,
 			conversationHistory,
-			tools: this._getProviderTools(),
+			tools: this._getProviderTools(frontendTools),
 			toolResults,
 		};
 	}
@@ -776,12 +804,22 @@ export class AgenticRouter {
 		runOptions: AgenticRunOptions = {},
 		streamEvents?: AgenticRouterStreamEvent[],
 	): Promise<ToolResolution> {
+		if (runOptions.correctionAnswer && runOptions.frontendToolResult) {
+			throw new Error(
+				"Provide either correctionAnswer or frontendToolResult, but not both in the same run.",
+			);
+		}
+
 		const effectivePrompt =
 			runOptions.correctionAnswer?.pendingCorrection.originalPrompt ??
+			runOptions.frontendToolResult?.pendingFrontendToolCall.originalPrompt ??
 			normalizedPrompt;
 		const effectiveSystemInstruction =
 			runOptions.correctionAnswer?.pendingCorrection
-				.originalSystemInstruction ?? systemInstruction;
+				.originalSystemInstruction ??
+			runOptions.frontendToolResult?.pendingFrontendToolCall
+				.originalSystemInstruction ??
+			systemInstruction;
 		const historyUserPrompt = normalizedPrompt;
 		const toolResults: AgenticToolExecutionResult[] = [];
 		let iterations = 0;
@@ -819,6 +857,28 @@ export class AgenticRouter {
 			}
 		}
 
+		if (runOptions.frontendToolResult) {
+			const { pendingFrontendToolCall, result, durationMs } =
+				runOptions.frontendToolResult;
+			iterations = pendingFrontendToolCall.iteration;
+			const resumedResult: AgenticToolExecutionResult = {
+				toolName: pendingFrontendToolCall.toolCall.toolName,
+				rationale: pendingFrontendToolCall.toolCall.rationale,
+				arguments: pendingFrontendToolCall.toolCall.arguments,
+				result,
+				durationMs: durationMs ?? 0,
+			};
+			toolResults.push(resumedResult);
+
+			if (streamEvents) {
+				streamEvents.push({
+					type: "tool-result",
+					iteration: iterations,
+					result: resumedResult,
+				});
+			}
+		}
+
 		while (iterations < this.options.maxIterations) {
 			iterations += 1;
 
@@ -829,7 +889,7 @@ export class AgenticRouter {
 				conversationHistory: this.options.includeHistoryInPlanning
 					? conversationHistory
 					: undefined,
-				tools: this._getProviderTools(),
+				tools: this._getProviderTools(runOptions.frontendTools),
 				toolResults,
 				maxToolCalls: 2,
 			});
@@ -861,6 +921,33 @@ export class AgenticRouter {
 			}
 
 			for (const toolCall of nextCalls) {
+				const pendingFrontendToolCall = this._toPendingFrontendToolCall(
+					toolCall,
+					effectivePrompt,
+					effectiveSystemInstruction,
+					iterations,
+					runOptions.frontendTools,
+				);
+
+				if (pendingFrontendToolCall) {
+					if (streamEvents) {
+						streamEvents.push({
+							type: "frontend-tool-call",
+							iteration: iterations,
+							pendingFrontendToolCall,
+						});
+					}
+
+					return {
+						status: "needs-user-input",
+						historyUserPrompt,
+						response: this._buildFrontendToolPausedResponse(
+							pendingFrontendToolCall,
+							toolResults,
+						),
+					};
+				}
+
 				if (streamEvents) {
 					streamEvents.push({
 						type: "tool-call",
@@ -921,6 +1008,44 @@ export class AgenticRouter {
 			historyUserPrompt,
 			toolResults,
 			iterations,
+		};
+	}
+
+	private _toPendingFrontendToolCall(
+		toolCall: AgenticToolCallPlan,
+		prompt: string,
+		systemInstruction: string | undefined,
+		iteration: number,
+		frontendTools: readonly AgenticFrontendToolDescriptor[] | undefined,
+	): AgenticPendingFrontendToolCall | undefined {
+		if (!frontendTools?.some((tool) => tool.name === toolCall.toolName)) {
+			return undefined;
+		}
+
+		return {
+			toolCall,
+			originalPrompt: prompt,
+			originalSystemInstruction: systemInstruction,
+			iteration,
+		};
+	}
+
+	private _buildFrontendToolPausedResponse(
+		pendingFrontendToolCall: AgenticPendingFrontendToolCall,
+		toolCalls: readonly AgenticToolExecutionResult[],
+	): AgenticRouterResponse {
+		return {
+			status: "needs-user-input",
+			model: this.options.model,
+			prompt: pendingFrontendToolCall.originalPrompt,
+			systemInstruction: pendingFrontendToolCall.originalSystemInstruction,
+			content: [
+				"Frontend tool execution required.",
+				`Run ${pendingFrontendToolCall.toolCall.toolName} on the client and resume the flow with the result.`,
+			].join("\n"),
+			toolCalls: [...toolCalls],
+			iterations: pendingFrontendToolCall.iteration,
+			pendingFrontendToolCall,
 		};
 	}
 
@@ -1340,8 +1465,10 @@ export class AgenticRouter {
 	/**
 	 * Builds the provider-facing tool list without exposing runtime handlers.
 	 */
-	private _getProviderTools(): AgenticLLMToolDescriptor[] {
-		return [...this.tools.values()].map((tool) => {
+	private _getProviderTools(
+		frontendTools: readonly AgenticFrontendToolDescriptor[] | undefined = [],
+	): AgenticLLMToolDescriptor[] {
+		const backendTools = [...this.tools.values()].map((tool) => {
 			return {
 				name: tool.name,
 				description: tool.options?.requiresConfirmation
@@ -1350,6 +1477,16 @@ export class AgenticRouter {
 				schema: tool.schema,
 			};
 		});
+
+		const normalizedFrontendTools = (frontendTools ?? []).map((tool) => {
+			return {
+				name: tool.name,
+				description: `${tool.description} This tool is executed on the frontend client via protocol resume.`,
+				schema: tool.schema,
+			};
+		});
+
+		return [...backendTools, ...normalizedFrontendTools];
 	}
 
 	private async _resumePendingCorrection(

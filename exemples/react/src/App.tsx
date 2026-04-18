@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { z } from "ai-prompt-tools-to-ui";
 import {
 	AgenticFlowClient,
+	createAgenticFrontendTool,
 	createFetchAgenticFlowTransport,
 	type AgenticFlowState,
 	type AgenticPendingCorrection,
@@ -12,13 +14,31 @@ const transport = createFetchAgenticFlowTransport({
 
 const client = new AgenticFlowClient({
 	transport,
+	localTools: [
+		createAgenticFrontendTool({
+			name: "format_currency",
+			description: "Format amounts with Intl in the browser runtime.",
+			schema: z.object({
+				amount: z.number(),
+				currency: z.string().min(3),
+			}),
+			handler: ({ amount, currency }) => {
+				return new Intl.NumberFormat("en-US", {
+					style: "currency",
+					currency,
+				}).format(amount);
+			},
+		}),
+	],
 });
 
 const defaultConversationId = client.startConversation("react-example");
 
 export function App() {
-	const [flowState, setFlowState] = useState<AgenticFlowState>(client.getState());
-	const [prompt, setPrompt] = useState("look up the weather in Paris");
+	const [flowState, setFlowState] = useState<AgenticFlowState>(
+		client.getState(),
+	);
+	const [prompt, setPrompt] = useState("show payroll in euro");
 	const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
 	const [busy, setBusy] = useState(false);
 	const abortRef = useRef<AbortController | null>(null);
@@ -78,7 +98,9 @@ export function App() {
 				pendingCorrection,
 				conversationId: flowState.conversationId,
 				values: Object.fromEntries(
-					Object.entries(fieldValues).filter(([, value]) => value.trim().length > 0),
+					Object.entries(fieldValues).filter(
+						([, value]) => value.trim().length > 0,
+					),
 				),
 				confirmed,
 				resetContent: true,
@@ -117,8 +139,8 @@ export function App() {
 					<div>
 						<h1 style={styles.title}>React SDK example</h1>
 						<p style={styles.muted}>
-							Client-side React app using AgenticFlowClient and
-							 createFetchAgenticFlowTransport.
+							Client-side React app using AgenticFlowClient,
+							createFetchAgenticFlowTransport, and frontend tool auto-resume.
 						</p>
 					</div>
 					<div style={styles.badges}>
@@ -141,10 +163,20 @@ export function App() {
 						<button type="submit" disabled={busy} style={styles.primaryButton}>
 							Send prompt
 						</button>
-						<button type="button" onClick={handleReset} disabled={busy} style={styles.button}>
+						<button
+							type="button"
+							onClick={handleReset}
+							disabled={busy}
+							style={styles.button}
+						>
 							Reset
 						</button>
-						<button type="button" onClick={handleAbort} disabled={!busy} style={styles.button}>
+						<button
+							type="button"
+							onClick={handleAbort}
+							disabled={!busy}
+							style={styles.button}
+						>
 							Abort
 						</button>
 					</div>
@@ -198,7 +230,9 @@ export function App() {
 				<div style={styles.grid}>
 					<section style={styles.panel}>
 						<h2 style={styles.sectionTitle}>Summary</h2>
-						<pre style={styles.pre}>{flowState.content || "No response yet."}</pre>
+						<pre style={styles.pre}>
+							{flowState.content || "No response yet."}
+						</pre>
 					</section>
 
 					<section style={styles.panel}>
@@ -217,7 +251,9 @@ export function App() {
 
 					<section style={styles.panel}>
 						<h2 style={styles.sectionTitle}>Error</h2>
-						<pre style={styles.pre}>{flowState.error?.message ?? "No error"}</pre>
+						<pre style={styles.pre}>
+							{flowState.error?.message ?? "No error"}
+						</pre>
 					</section>
 				</div>
 			</div>

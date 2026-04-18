@@ -8,6 +8,8 @@ Minimal client-side React example using the package client SDK.
 - `AgenticFlowClient` state subscription in React
 - streamed prompt execution with `client.stream()`
 - correction resume with `client.resumeCorrectionStream()`
+- frontend tool registration in the browser (`localTools`)
+- automatic frontend tool resume while streaming (`autoResumeFrontendTools`)
 - remote history reset with `client.reset()`
 
 ## Files
@@ -36,6 +38,14 @@ npm run dev
 ```
 
 Vite serves the app on `http://localhost:5173` and proxies `/api/flow/*` to `http://localhost:3000`.
+
+Try prompting with `show payroll in euro` to exercise the frontend `format_currency` tool flow.
+
+## Frontend tool resume behavior
+
+This example uses the default `autoResumeFrontendTools: true`, so when the backend pauses with a `pendingFrontendToolCall`, the client executes the local tool and continues automatically.
+
+If you prefer a manual approval UX, initialize the client with `autoResumeFrontendTools: false` and call `client.resumeFrontendTool()` or `client.resumeFrontendToolStream()` when the user approves.
 
 ## Notes
 
