@@ -10,14 +10,13 @@ const runtime = createShowcaseRuntime();
 const { conversationId, prompt } = parseCliArguments(Bun.argv.slice(2));
 
 await runtime.router
-	.runAndRender(prompt, SHOWCASE_SYSTEM_INSTRUCTION, { conversationId })
-	.then((renderedOutput) => {
-		const { content, pendingCorrection, ...rest } = renderedOutput;
+	.runAndRespond(prompt, SHOWCASE_SYSTEM_INSTRUCTION, { conversationId })
+	.then((response) => {
+		const { pendingCorrection, ...rest } = response;
 		console.log({ ...rest, conversationId });
 		if (pendingCorrection) {
 			console.log({ pendingCorrection });
 		}
-		return Bun.file("output.html").write(content);
 	});
 
 function parseCliArguments(args: string[]): {

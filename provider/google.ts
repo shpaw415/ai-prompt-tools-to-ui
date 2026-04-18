@@ -1,14 +1,14 @@
 import type { AgenticLLMProvider } from "../index";
 import {
 	buildNativePlanPrompt,
-	buildRenderStreamPrompt,
+	buildResponseStreamPrompt,
 	buildToolJsonSchema,
 	type HttpAgenticProviderClient,
 	type HttpAgenticProviderOptions,
 	iterateSSEMessages,
 	normalizeToolArguments,
 	normalizePlanResponse,
-	normalizeRenderResponse,
+	normalizeResponsePayload,
 	openEventStream,
 	parseJsonText,
 	postJson,
@@ -156,7 +156,7 @@ export function createGoogleProvider<
 				`Google ${request.phase}`,
 			);
 
-			return normalizeRenderResponse(parsed);
+			return normalizeResponsePayload(parsed);
 		},
 		stream: async function* (request) {
 			const eventStream = await openEventStream(
@@ -171,14 +171,14 @@ export function createGoogleProvider<
 						systemInstruction: {
 							parts: [
 								{
-									text: "You are a streaming render engine for an agentic router. Return only the final rendered output.",
+									text: "You are a streaming final response engine for an agentic router. Return only the final plain-text summary.",
 								},
 							],
 						},
 						contents: [
 							{
 								role: "user",
-								parts: [{ text: buildRenderStreamPrompt(request) }],
+								parts: [{ text: buildResponseStreamPrompt(request) }],
 							},
 						],
 						generationConfig: {
@@ -203,7 +203,7 @@ export function createGoogleProvider<
 
 				content += delta;
 				yield {
-					phase: "render",
+					phase: "respond",
 					delta,
 					content,
 				};

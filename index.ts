@@ -2,10 +2,6 @@ import { z, type ZodError, type ZodTypeAny } from "zod";
 
 type Awaitable<T> = T | Promise<T>;
 
-export type AgenticOutputFormat = "html" | "markdown";
-
-export type AgenticRenderStyle = "tailwind" | "inline-css" | "plain-css";
-
 export type AgenticConversationRole = "system" | "user" | "assistant";
 
 export interface AgenticConversationMessage {
@@ -55,7 +51,6 @@ export interface AgenticPendingCorrection {
 	iteration: number;
 	confirmationKey?: string;
 	confirmationMessage?: string;
-	form?: AgenticCorrectionFormMetadata;
 }
 
 export interface AgenticCorrectionAnswer {
@@ -64,34 +59,11 @@ export interface AgenticCorrectionAnswer {
 	confirmed?: boolean;
 }
 
-export interface AgenticInteractiveCorrectionFormOptions {
-	callbackName: string;
-	pendingCorrectionFieldName?: string;
-	conversationIdFieldName?: string;
-	confirmedFieldName?: string;
-	submitLabel?: string;
-	confirmLabel?: string;
-}
-
-export interface AgenticCorrectionFormMetadata {
-	callbackName: string;
-	formId: string;
-	pendingCorrectionFieldName: string;
-	conversationIdFieldName: string;
-	confirmedFieldName: string;
-	submitLabel: string;
-	confirmLabel: string;
-}
-
 interface ResolvedAgenticRouterOptions {
 	model: string;
-	outputFormat: AgenticOutputFormat;
-	renderStyle?: AgenticRenderStyle;
-	renderStyleInstruction?: string;
-	renderResolver?: AgenticRenderResolver;
+	responseResolver?: AgenticResponseResolver;
 	historyProvider?: AgenticConversationHistoryProvider;
 	enableInteractiveCorrections: boolean;
-	interactiveCorrectionForm?: AgenticInteractiveCorrectionFormOptions;
 	includeHistoryInPlanning: boolean;
 	historyWindowSize: number;
 	maxIterations: number;
@@ -117,7 +89,6 @@ export interface AgenticLLMPlanRequest {
 	phase: "plan";
 	prompt: string;
 	systemInstruction?: string;
-	outputFormat: AgenticOutputFormat;
 	conversationHistory?: readonly AgenticConversationMessage[];
 	tools: readonly AgenticLLMToolDescriptor[];
 	toolResults: readonly AgenticToolExecutionResult[];
@@ -133,33 +104,30 @@ export interface AgenticLLMPlanResponse {
 }
 
 /**
- * Rendering request sent to the configured LLM provider.
+ * Final response request sent to the configured LLM provider.
  */
-export interface AgenticLLMRenderRequest {
-	phase: "render";
+export interface AgenticLLMResponseRequest {
+	phase: "respond";
 	prompt: string;
 	systemInstruction?: string;
-	outputFormat: AgenticOutputFormat;
-	renderStyle?: AgenticRenderStyle;
-	renderStyleInstruction?: string;
 	conversationHistory?: readonly AgenticConversationMessage[];
 	tools: readonly AgenticLLMToolDescriptor[];
 	toolResults: readonly AgenticToolExecutionResult[];
 }
 
 /**
- * Rendering response returned by the LLM provider.
+ * Final response returned by the LLM provider.
  */
-export interface AgenticLLMRenderResponse {
-	phase: "render";
+export interface AgenticLLMResponseResponse {
+	phase: "respond";
 	content: string;
 }
 
 /**
- * Incremental render chunk emitted by a provider stream.
+ * Incremental response chunk emitted by a provider stream.
  */
-export interface AgenticLLMRenderStreamChunk {
-	phase: "render";
+export interface AgenticLLMResponseStreamChunk {
+	phase: "respond";
 	delta: string;
 	content: string;
 }
@@ -169,26 +137,26 @@ export interface AgenticLLMRenderStreamChunk {
  */
 export type AgenticLLMProviderRequest =
 	| AgenticLLMPlanRequest
-	| AgenticLLMRenderRequest;
+	| AgenticLLMResponseRequest;
 
 /**
  * Union of all responses that a provider can return to the router.
  */
 export type AgenticLLMProviderResponse =
 	| AgenticLLMPlanResponse
-	| AgenticLLMRenderResponse;
+	| AgenticLLMResponseResponse;
 
 /**
- * Optional deterministic render hook that can bypass the provider render phase.
+ * Optional deterministic response hook that can bypass the provider response phase.
  *
  * Return `undefined` to fall back to the configured LLM provider.
  */
-export type AgenticRenderResolver = (
-	request: AgenticLLMRenderRequest,
-) => Awaitable<AgenticLLMRenderResponse | undefined>;
+export type AgenticResponseResolver = (
+	request: AgenticLLMResponseRequest,
+) => Awaitable<AgenticLLMResponseResponse | undefined>;
 
 /**
- * Stream events yielded by {@link AgenticRouter.runAndRenderStream}.
+ * Stream events yielded by {@link AgenticRouter.runAndRespondStream}.
  */
 export type AgenticRouterStreamEvent =
 	| {
@@ -202,7 +170,7 @@ export type AgenticRouterStreamEvent =
 			result: AgenticToolExecutionResult;
 	  }
 	| {
-			type: "render";
+			type: "response";
 			delta: string;
 			content: string;
 	  }
@@ -220,7 +188,7 @@ export type AgenticRouterStreamEvent =
  *
  * The provider owns SDK-specific concerns such as API keys, client instances,
  * model identifiers, custom headers, or base URLs. The router only requires a
- * `request` function that understands planning and rendering payloads.
+ * `request` function that understands planning and final-response payloads.
  */
 export interface AgenticLLMProvider<
 	Metadata extends Record<string, unknown> = Record<string, unknown>,
@@ -236,8 +204,8 @@ export interface AgenticLLMProvider<
 		request: AgenticLLMProviderRequest,
 	) => Awaitable<AgenticLLMProviderResponse>;
 	stream?: (
-		request: AgenticLLMRenderRequest,
-	) => AsyncIterable<AgenticLLMRenderStreamChunk>;
+		request: AgenticLLMResponseRequest,
+	) => AsyncIterable<AgenticLLMResponseStreamChunk>;
 }
 
 /**
@@ -266,8 +234,6 @@ export interface AgenticRouterOptions {
 	 * Modular provider definition used to integrate any LLM SDK.
 	 */
 	provider?: AgenticLLMProvider;
-	/** Desired render target for the generated UI payload. */
-	outputFormat?: AgenticOutputFormat;
 	/**
 	 * Enables pause/resume corrections for missing tool inputs and confirmations.
 	 *
@@ -277,34 +243,9 @@ export interface AgenticRouterOptions {
 	 */
 	enableInteractiveCorrections?: boolean;
 	/**
-	 * Optional HTML form metadata for paused correction responses.
-	 *
-	 * When configured and the router outputs HTML, paused correction responses
-	 * render a real form element with callback metadata so the client can attach
-	 * its own JavaScript submit handler.
+	 * Optional deterministic summary hook executed before the provider response call.
 	 */
-	interactiveCorrectionForm?: AgenticInteractiveCorrectionFormOptions;
-	/**
-	 * Optional styling strategy requested from the render model.
-	 *
-	 * This influences how HTML output should be styled, for example with
-	 * Tailwind utility classes, inline styles, or a plain CSS block.
-	 */
-	renderStyle?: AgenticRenderStyle;
-	/**
-	 * Additional rendering constraints appended to the style guidance.
-	 *
-	 * Use this for design-specific instructions such as spacing, typography,
-	 * component density, or a restricted class naming scheme.
-	 */
-	renderStyleInstruction?: string;
-	/**
-	 * Optional deterministic render hook executed before the provider render call.
-	 *
-	 * This is useful for predictable or large result sets that should be rendered
-	 * from typed templates instead of consuming extra LLM tokens.
-	 */
-	renderResolver?: AgenticRenderResolver;
+	responseResolver?: AgenticResponseResolver;
 	/**
 	 * Optional provider used to persist conversation history between runs.
 	 */
@@ -312,7 +253,7 @@ export interface AgenticRouterOptions {
 	/**
 	 * Whether prior conversation history should be included during planning.
 	 *
-	 * When false, history is still persisted and available to the render phase,
+	 * When false, history is still persisted and available to the response phase,
 	 * but the planner only sees the current prompt and current-run tool results.
 	 */
 	includeHistoryInPlanning?: boolean;
@@ -323,13 +264,13 @@ export interface AgenticRouterOptions {
 	 * loading prior messages while still allowing future writes.
 	 */
 	historyWindowSize?: number;
-	/** Maximum planning iterations before the router forces a render. */
+	/** Maximum planning iterations before the router forces a final response. */
 	maxIterations?: number;
 	/**
-	 * Enables provider-backed streaming during `runAndRenderStream()`.
+	 * Enables provider-backed streaming during `runAndRespondStream()`.
 	 *
 	 * When false, the stream API still works but falls back to a single buffered
-	 * render chunk generated through the provider `request()` method.
+	 * response chunk generated through the provider `request()` method.
 	 */
 	useStreaming?: boolean;
 }
@@ -342,7 +283,6 @@ export interface AgenticToolExecutionContext {
 	systemInstruction?: string;
 	conversationId?: string;
 	iteration: number;
-	outputFormat: AgenticOutputFormat;
 	toolResults: readonly AgenticToolExecutionResult[];
 }
 
@@ -364,6 +304,8 @@ export interface AgenticToolOptions {
 	requiresConfirmation?: boolean;
 	confirmationMessage?: string;
 	confirmationKey?: string;
+	isMutation?: boolean;
+	intentKeywords?: readonly string[];
 }
 
 /**
@@ -398,12 +340,11 @@ export interface AgenticToolExecutionResult {
 }
 
 /**
- * Final render payload returned to the consumer.
+ * Final response payload returned to the consumer.
  */
 export interface AgenticRouterResponse {
 	status: AgenticRouterStatus;
 	model: string;
-	format: AgenticOutputFormat;
 	prompt: string;
 	systemInstruction?: string;
 	content: string;
@@ -438,7 +379,7 @@ export interface AgenticUIPluginOptions {
 }
 
 /**
- * Agentic router responsible for planning tool calls and returning renderable UI.
+ * Agentic router responsible for planning tool calls and returning grounded summaries.
  *
  * The current implementation ships with a mock LLM adapter so the orchestration,
  * typing, and validation layers can be exercised without API keys.
@@ -459,7 +400,6 @@ export class AgenticRouter {
 			});
 
 		this.options = {
-			outputFormat: "markdown",
 			enableInteractiveCorrections: false,
 			includeHistoryInPlanning: true,
 			historyWindowSize: 12,
@@ -507,12 +447,12 @@ export class AgenticRouter {
 	}
 
 	/**
-	 * Runs the planning loop, executes required tools, and renders the final UI string.
+	 * Runs the planning loop, executes required tools, and returns the final summary.
 	 *
 	 * @param prompt Natural language input from the end user.
-	 * @param systemInstruction Optional system-level directive passed to the planner and renderer.
+	 * @param systemInstruction Optional system-level directive passed to the planner and response phase.
 	 */
-	async runAndRender(
+	async runAndRespond(
 		prompt: string,
 		systemInstruction?: string,
 		runOptions: AgenticRunOptions = {},
@@ -537,8 +477,8 @@ export class AgenticRouter {
 			return resolution.response;
 		}
 
-		const rendered = await this._resolveRender(
-			this._createRenderRequest(
+		const summary = await this._resolveResponse(
+			this._createResponseRequest(
 				resolution.effectivePrompt,
 				resolution.effectiveSystemInstruction,
 				conversationHistory,
@@ -549,10 +489,9 @@ export class AgenticRouter {
 		const response = {
 			status: "completed" as const,
 			model: this.options.model,
-			format: this.options.outputFormat,
 			prompt: resolution.effectivePrompt,
 			systemInstruction: resolution.effectiveSystemInstruction,
-			content: rendered.content,
+			content: summary.content,
 			toolCalls: resolution.toolResults,
 			iterations: resolution.iterations,
 		};
@@ -568,11 +507,11 @@ export class AgenticRouter {
 	}
 
 	/**
-	 * Runs the full agentic loop and streams render deltas as they arrive.
+	 * Runs the full agentic loop and streams response deltas as they arrive.
 	 *
-	 * Planning and tool execution are completed before the render phase starts.
+	 * Planning and tool execution are completed before the response phase starts.
 	 */
-	async *runAndRenderStream(
+	async *runAndRespondStream(
 		prompt: string,
 		systemInstruction?: string,
 		runOptions: AgenticRunOptions = {},
@@ -608,33 +547,34 @@ export class AgenticRouter {
 			return resolution.response;
 		}
 
-		const renderRequest = this._createRenderRequest(
+		const responseRequest = this._createResponseRequest(
 			resolution.effectivePrompt,
 			resolution.effectiveSystemInstruction,
 			conversationHistory,
 			resolution.toolResults,
 		);
-		const resolvedRender = await this.options.renderResolver?.(renderRequest);
+		const resolvedResponse =
+			await this.options.responseResolver?.(responseRequest);
 		let content = "";
 
-		if (resolvedRender) {
-			if (resolvedRender.phase !== renderRequest.phase) {
+		if (resolvedResponse) {
+			if (resolvedResponse.phase !== responseRequest.phase) {
 				throw new Error(
-					`Render resolver returned a ${resolvedRender.phase} response for a ${renderRequest.phase} request.`,
+					`Response resolver returned a ${resolvedResponse.phase} response for a ${responseRequest.phase} request.`,
 				);
 			}
 
-			content = resolvedRender.content;
+			content = resolvedResponse.content;
 
 			if (content) {
 				yield {
-					type: "render",
+					type: "response",
 					delta: content,
 					content,
 				};
 			}
 		} else {
-			for await (const chunk of this._streamLLM(renderRequest)) {
+			for await (const chunk of this._streamResponse(responseRequest)) {
 				content = chunk.content;
 
 				if (!chunk.delta) {
@@ -642,7 +582,7 @@ export class AgenticRouter {
 				}
 
 				yield {
-					type: "render",
+					type: "response",
 					delta: chunk.delta,
 					content: chunk.content,
 				};
@@ -652,7 +592,6 @@ export class AgenticRouter {
 		const response: AgenticRouterResponse = {
 			status: "completed",
 			model: this.options.model,
-			format: this.options.outputFormat,
 			prompt: resolution.effectivePrompt,
 			systemInstruction: resolution.effectiveSystemInstruction,
 			content,
@@ -723,8 +662,8 @@ export class AgenticRouter {
 		request: AgenticLLMPlanRequest,
 	): Promise<AgenticLLMPlanResponse>;
 	private async _callLLM(
-		request: AgenticLLMRenderRequest,
-	): Promise<AgenticLLMRenderResponse>;
+		request: AgenticLLMResponseRequest,
+	): Promise<AgenticLLMResponseResponse>;
 	private async _callLLM(
 		request: AgenticLLMProviderRequest,
 	): Promise<AgenticLLMProviderResponse> {
@@ -739,43 +678,40 @@ export class AgenticRouter {
 		return response;
 	}
 
-	private _createRenderRequest(
+	private _createResponseRequest(
 		prompt: string,
 		systemInstruction: string | undefined,
 		conversationHistory: readonly AgenticConversationMessage[] | undefined,
 		toolResults: readonly AgenticToolExecutionResult[],
-	): AgenticLLMRenderRequest {
+	): AgenticLLMResponseRequest {
 		return {
-			phase: "render",
+			phase: "respond",
 			prompt,
 			systemInstruction,
-			outputFormat: this.options.outputFormat,
-			renderStyle: this.options.renderStyle,
-			renderStyleInstruction: this.options.renderStyleInstruction,
 			conversationHistory,
 			tools: this._getProviderTools(),
 			toolResults,
 		};
 	}
 
-	private async _resolveRender(
-		request: AgenticLLMRenderRequest,
-	): Promise<AgenticLLMRenderResponse> {
-		return (await this._resolveRenderWithSource(request)).response;
+	private async _resolveResponse(
+		request: AgenticLLMResponseRequest,
+	): Promise<AgenticLLMResponseResponse> {
+		return (await this._resolveResponseWithSource(request)).response;
 	}
 
-	private async _resolveRenderWithSource(
-		request: AgenticLLMRenderRequest,
+	private async _resolveResponseWithSource(
+		request: AgenticLLMResponseRequest,
 	): Promise<{
-		response: AgenticLLMRenderResponse;
+		response: AgenticLLMResponseResponse;
 		source: "resolver" | "provider";
 	}> {
-		const resolved = await this.options.renderResolver?.(request);
+		const resolved = await this.options.responseResolver?.(request);
 
 		if (resolved) {
 			if (resolved.phase !== request.phase) {
 				throw new Error(
-					`Render resolver returned a ${resolved.phase} response for a ${request.phase} request.`,
+					`Response resolver returned a ${resolved.phase} response for a ${request.phase} request.`,
 				);
 			}
 
@@ -792,15 +728,15 @@ export class AgenticRouter {
 	}
 
 	/**
-	 * Streams render chunks from the provider, or falls back to a single response.
+	 * Streams response chunks from the provider, or falls back to a single response.
 	 */
-	private async *_streamLLM(
-		request: AgenticLLMRenderRequest,
-	): AsyncGenerator<AgenticLLMRenderStreamChunk, void, void> {
+	private async *_streamResponse(
+		request: AgenticLLMResponseRequest,
+	): AsyncGenerator<AgenticLLMResponseStreamChunk, void, void> {
 		if (!this.options.useStreaming || !this.options.provider.stream) {
 			const fallback = await this._callLLM(request);
 			yield {
-				phase: "render",
+				phase: "respond",
 				delta: fallback.content,
 				content: fallback.content,
 			};
@@ -823,7 +759,7 @@ export class AgenticRouter {
 		if (!emitted) {
 			const fallback = await this._callLLM(request);
 			yield {
-				phase: "render",
+				phase: "respond",
 				delta: fallback.content,
 				content: fallback.content,
 			};
@@ -831,7 +767,7 @@ export class AgenticRouter {
 	}
 
 	/**
-	 * Resolves planning and tool execution before the final render phase.
+	 * Resolves planning and tool execution before the final response phase.
 	 */
 	private async _resolveToolCalls(
 		normalizedPrompt: string,
@@ -858,7 +794,6 @@ export class AgenticRouter {
 					systemInstruction: effectiveSystemInstruction,
 					conversationId: runOptions.conversationId,
 					iteration: runOptions.correctionAnswer.pendingCorrection.iteration,
-					outputFormat: this.options.outputFormat,
 					toolResults,
 				},
 			);
@@ -891,7 +826,6 @@ export class AgenticRouter {
 				phase: "plan",
 				prompt: effectivePrompt,
 				systemInstruction: effectiveSystemInstruction,
-				outputFormat: this.options.outputFormat,
 				conversationHistory: this.options.includeHistoryInPlanning
 					? conversationHistory
 					: undefined,
@@ -901,6 +835,22 @@ export class AgenticRouter {
 			});
 
 			if (planning.toolCalls.length === 0) {
+				const guardedPause = await this._createMissingInputGuardrailResponse(
+					effectivePrompt,
+					effectiveSystemInstruction,
+					runOptions,
+					toolResults,
+					iterations,
+				);
+
+				if (guardedPause) {
+					return {
+						status: "needs-user-input",
+						historyUserPrompt,
+						response: guardedPause,
+					};
+				}
+
 				break;
 			}
 
@@ -919,12 +869,28 @@ export class AgenticRouter {
 					});
 				}
 
+				const mutationGuardrailPause =
+					await this._createMutationGuardrailResponse(toolCall, {
+						prompt: effectivePrompt,
+						systemInstruction: effectiveSystemInstruction,
+						conversationId: runOptions.conversationId,
+						iteration: iterations,
+						toolResults,
+					});
+
+				if (mutationGuardrailPause) {
+					return {
+						status: "needs-user-input",
+						historyUserPrompt,
+						response: mutationGuardrailPause,
+					};
+				}
+
 				const execution = await this._tryExecutePlannedToolCall(toolCall, {
 					prompt: effectivePrompt,
 					systemInstruction: effectiveSystemInstruction,
 					conversationId: runOptions.conversationId,
 					iteration: iterations,
-					outputFormat: this.options.outputFormat,
 					toolResults,
 				});
 
@@ -956,6 +922,284 @@ export class AgenticRouter {
 			toolResults,
 			iterations,
 		};
+	}
+
+	private async _createMutationGuardrailResponse(
+		plan: AgenticToolCallPlan,
+		context: AgenticToolExecutionContext,
+	): Promise<AgenticRouterResponse | undefined> {
+		if (!this.options.enableInteractiveCorrections) {
+			return undefined;
+		}
+
+		const definition = this.tools.get(plan.toolName);
+
+		if (!definition || !this._isMutationTool(definition)) {
+			return undefined;
+		}
+
+		const requiredFields = getRequiredToolFieldNames(definition.schema);
+
+		if (requiredFields.length === 0) {
+			return undefined;
+		}
+
+		const missingOrUnevidenced = requiredFields.filter((fieldName) => {
+			const value = plan.arguments[fieldName];
+
+			if (isGuardrailEmptyValue(value)) {
+				return true;
+			}
+
+			return !this._hasPromptEvidenceForArgument(context.prompt, value);
+		});
+
+		if (missingOrUnevidenced.length === 0) {
+			return undefined;
+		}
+
+		const guardedArguments = Object.fromEntries(
+			Object.entries(plan.arguments).filter(([fieldName, value]) => {
+				if (!requiredFields.includes(fieldName)) {
+					return true;
+				}
+
+				if (isGuardrailEmptyValue(value)) {
+					return false;
+				}
+
+				return this._hasPromptEvidenceForArgument(context.prompt, value);
+			}),
+		);
+
+		const correctionFields: AgenticPendingCorrectionField[] =
+			missingOrUnevidenced.map((fieldName) => {
+				const valueType = extractCorrectionValueType(definition.schema, [
+					fieldName,
+				]);
+
+				return {
+					name: fieldName,
+					message: `Provide an explicit value for ${fieldName}. The router will not assume required mutation inputs.`,
+					...(valueType ? { valueType } : {}),
+				};
+			});
+
+		const correction: AgenticPendingCorrection = {
+			reason: "validation-required",
+			message: `I need explicit required values before I can run ${plan.toolName}. Please provide: ${missingOrUnevidenced.join(", ")}.`,
+			toolCall: {
+				...plan,
+				arguments: guardedArguments,
+			},
+			fields: correctionFields,
+			originalPrompt: context.prompt,
+			originalSystemInstruction: context.systemInstruction,
+			iteration: context.iteration,
+		};
+
+		return this._buildPausedResponse(
+			correction,
+			context.toolResults,
+			context.conversationId,
+		);
+	}
+
+	private _isMutationTool(definition: AgenticToolDefinition): boolean {
+		if (definition.options?.isMutation !== undefined) {
+			return definition.options.isMutation;
+		}
+
+		const toolText =
+			`${definition.name} ${definition.description}`.toLowerCase();
+
+		return /\b(add|create|update|adjust|remove|delete|insert|modify|change|set)\b/.test(
+			toolText,
+		);
+	}
+
+	private _hasPromptEvidenceForArgument(
+		prompt: string,
+		value: unknown,
+	): boolean {
+		const promptText = prompt.trim().toLowerCase();
+
+		if (!promptText) {
+			return false;
+		}
+
+		if (typeof value === "string") {
+			const normalizedValue = value.trim().toLowerCase();
+
+			if (!normalizedValue) {
+				return false;
+			}
+
+			return promptText.includes(normalizedValue);
+		}
+
+		if (typeof value === "number" || typeof value === "boolean") {
+			return promptText.includes(String(value).toLowerCase());
+		}
+
+		if (Array.isArray(value)) {
+			if (value.length === 0) {
+				return false;
+			}
+
+			return value.every((entry) => {
+				return this._hasPromptEvidenceForArgument(promptText, entry);
+			});
+		}
+
+		return false;
+	}
+
+	private async _createMissingInputGuardrailResponse(
+		prompt: string,
+		systemInstruction: string | undefined,
+		runOptions: AgenticRunOptions,
+		toolResults: readonly AgenticToolExecutionResult[],
+		iteration: number,
+	): Promise<AgenticRouterResponse | undefined> {
+		if (!this.options.enableInteractiveCorrections) {
+			return undefined;
+		}
+
+		if (toolResults.length > 0) {
+			return undefined;
+		}
+
+		if (runOptions.correctionAnswer) {
+			return undefined;
+		}
+
+		const likelyTool = this._findLikelyToolForPrompt(prompt);
+
+		if (!likelyTool) {
+			return undefined;
+		}
+
+		const validation = await likelyTool.schema.safeParseAsync({});
+
+		if (validation.success) {
+			return undefined;
+		}
+
+		const correction = this._createValidationCorrection(
+			{
+				toolName: likelyTool.name,
+				rationale:
+					"Guardrail fallback: tool likely required but missing required arguments.",
+				arguments: {},
+			},
+			{
+				prompt,
+				systemInstruction,
+				conversationId: runOptions.conversationId,
+				iteration,
+				toolResults,
+			},
+			likelyTool.schema,
+			validation.error,
+		);
+
+		if (correction.fields.length === 0) {
+			return undefined;
+		}
+
+		return this._buildPausedResponse(
+			correction,
+			toolResults,
+			runOptions.conversationId,
+		);
+	}
+
+	private _findLikelyToolForPrompt(
+		prompt: string,
+	): AgenticToolDefinition | undefined {
+		const promptText = normalizeIntentText(prompt);
+		const promptTokens = new Set(this._tokenizePrompt(promptText));
+		const hasMutationIntent = this._hasMutationIntent(promptText);
+
+		const ranked = [...this.tools.values()]
+			.map((tool) => {
+				const toolText = normalizeIntentText(
+					`${tool.name} ${tool.description}`,
+				);
+				const toolTokens = new Set(this._tokenizePrompt(toolText));
+				let score = promptText.includes(normalizeIntentText(tool.name)) ? 8 : 0;
+				const isMutationTool = this._isMutationTool(tool);
+				const hasIntentKeywordMatch = this._toolHasIntentKeywordMatch(
+					promptText,
+					tool,
+				);
+
+				for (const token of toolTokens) {
+					if (promptTokens.has(token)) {
+						score += 1;
+					}
+				}
+
+				if (hasIntentKeywordMatch) {
+					score += 4;
+				}
+
+				if (hasMutationIntent && isMutationTool) {
+					score += 3;
+				}
+
+				return { tool, score };
+			})
+			.sort((left, right) => right.score - left.score);
+
+		const minScore = hasMutationIntent ? 1 : 2;
+
+		if (!ranked[0] || ranked[0].score < minScore) {
+			return undefined;
+		}
+
+		return ranked[0].tool;
+	}
+
+	private _hasMutationIntent(prompt: string): boolean {
+		const normalizedPrompt = normalizeIntentText(prompt);
+
+		if (
+			/\b(create|add|update|adjust|remove|delete|insert|modify|change|set|hire)\b/.test(
+				normalizedPrompt,
+			)
+		) {
+			return true;
+		}
+
+		return [...this.tools.values()].some((tool) => {
+			return (
+				this._isMutationTool(tool) &&
+				this._toolHasIntentKeywordMatch(normalizedPrompt, tool)
+			);
+		});
+	}
+
+	private _toolHasIntentKeywordMatch(
+		prompt: string,
+		tool: AgenticToolDefinition,
+	): boolean {
+		const normalizedPrompt = normalizeIntentText(prompt);
+
+		return (tool.options?.intentKeywords ?? []).some((keyword) => {
+			const normalizedKeyword = normalizeIntentText(keyword);
+
+			return normalizedKeyword.length > 0
+				? normalizedPrompt.includes(normalizedKeyword)
+				: false;
+		});
+	}
+
+	private _tokenizePrompt(value: string): string[] {
+		const tokens = normalizeIntentText(value).match(/[\p{L}\p{N}]+/gu) ?? [];
+
+		return [...new Set(tokens.filter((token) => token.length > 1))];
 	}
 
 	private async _loadConversationHistory(
@@ -1002,7 +1246,6 @@ export class AgenticRouter {
 			timestamp,
 			metadata: {
 				status: response.status,
-				format: response.format,
 				iterations: response.iterations,
 				pendingCorrection: response.pendingCorrection,
 				toolCalls: response.toolCalls.map((toolCall) => {
@@ -1044,11 +1287,11 @@ export class AgenticRouter {
 		}
 
 		if (response.toolCalls.length === 0) {
-			return `Delivered a ${response.format} response without calling any tool.`;
+			return "Delivered a final summary without calling any tool.";
 		}
 
 		return [
-			`Delivered a ${response.format} response using the following tool results:`,
+			"Delivered a final summary using the following tool results:",
 			JSON.stringify(
 				response.toolCalls.map((toolCall) => {
 					return {
@@ -1293,173 +1536,30 @@ export class AgenticRouter {
 	private _buildPausedResponse(
 		pendingCorrection: AgenticPendingCorrection,
 		toolCalls: readonly AgenticToolExecutionResult[],
-		conversationId?: string,
+		_conversationId?: string,
 	): AgenticRouterResponse {
-		const resolvedPendingCorrection = this._decoratePendingCorrection(
-			pendingCorrection,
-			conversationId,
-		);
-
 		return {
 			status: "needs-user-input",
 			model: this.options.model,
-			format: this.options.outputFormat,
-			prompt: resolvedPendingCorrection.originalPrompt,
-			systemInstruction: resolvedPendingCorrection.originalSystemInstruction,
-			content: this._renderPausedResponseContent(
-				resolvedPendingCorrection,
-				conversationId,
-			),
+			prompt: pendingCorrection.originalPrompt,
+			systemInstruction: pendingCorrection.originalSystemInstruction,
+			content: this._renderPausedResponseContent(pendingCorrection),
 			toolCalls: [...toolCalls],
-			iterations: resolvedPendingCorrection.iteration,
-			pendingCorrection: resolvedPendingCorrection,
+			iterations: pendingCorrection.iteration,
+			pendingCorrection,
 		};
 	}
 
 	private _renderPausedResponseContent(
 		pendingCorrection: AgenticPendingCorrection,
-		conversationId?: string,
 	): string {
-		if (this.options.outputFormat === "html") {
-			const correctionForm = this.options.interactiveCorrectionForm;
-
-			if (correctionForm) {
-				return this._renderPausedResponseForm(
-					pendingCorrection,
-					conversationId,
-					pendingCorrection.form ??
-						this._buildCorrectionFormMetadata(pendingCorrection),
-				);
-			}
-
-			const fields = pendingCorrection.fields.length
-				? `<ul>${pendingCorrection.fields
-						.map((field) => {
-							return `<li><strong>${escapeHtml(field.name)}</strong>: ${escapeHtml(field.message)}</li>`;
-						})
-						.join("")}</ul>`
-				: "";
-
-			return [
-				'<article class="agentic-ui agentic-ui-correction">',
-				"  <header>",
-				"    <h1>Additional Input Required</h1>",
-				`    <p>${escapeHtml(pendingCorrection.message)}</p>`,
-				"  </header>",
-				fields ? `  <section>${fields}</section>` : "",
-				"</article>",
-			]
-				.filter(Boolean)
-				.join("\n");
-		}
-
 		return [
-			"# Additional Input Required",
-			"",
+			"Additional input required.",
 			pendingCorrection.message,
 			...pendingCorrection.fields.map((field) => {
-				return `- ${field.name}: ${field.message}`;
+				return `${field.name}: ${field.message}`;
 			}),
 		].join("\n");
-	}
-
-	private _decoratePendingCorrection(
-		pendingCorrection: AgenticPendingCorrection,
-		conversationId?: string,
-	): AgenticPendingCorrection {
-		if (
-			this.options.outputFormat !== "html" ||
-			!this.options.interactiveCorrectionForm
-		) {
-			return pendingCorrection;
-		}
-
-		return {
-			...pendingCorrection,
-			form:
-				pendingCorrection.form ??
-				this._buildCorrectionFormMetadata(pendingCorrection, conversationId),
-		};
-	}
-
-	private _buildCorrectionFormMetadata(
-		pendingCorrection: AgenticPendingCorrection,
-		conversationId?: string,
-	): AgenticCorrectionFormMetadata {
-		const formOptions = this.options.interactiveCorrectionForm;
-
-		if (!formOptions) {
-			throw new Error(
-				"Interactive correction form metadata requested without router configuration.",
-			);
-		}
-
-		const safeToolName = pendingCorrection.toolCall.toolName
-			.replace(/[^a-z0-9_-]+/gi, "-")
-			.replace(/^-+|-+$/g, "")
-			.toLowerCase();
-		const conversationSuffix = conversationId
-			? `-${conversationId
-					.replace(/[^a-z0-9_-]+/gi, "-")
-					.replace(/^-+|-+$/g, "")
-					.toLowerCase()}`
-			: "";
-
-		return {
-			callbackName: formOptions.callbackName,
-			formId: `agentic-correction-${safeToolName || "form"}-${pendingCorrection.iteration}${conversationSuffix}`,
-			pendingCorrectionFieldName:
-				formOptions.pendingCorrectionFieldName ?? "agenticPendingCorrection",
-			conversationIdFieldName:
-				formOptions.conversationIdFieldName ?? "agenticConversationId",
-			confirmedFieldName: formOptions.confirmedFieldName ?? "agenticConfirmed",
-			submitLabel: formOptions.submitLabel ?? "Continue",
-			confirmLabel: formOptions.confirmLabel ?? "Confirm",
-		};
-	}
-
-	private _renderPausedResponseForm(
-		pendingCorrection: AgenticPendingCorrection,
-		conversationId: string | undefined,
-		form: AgenticCorrectionFormMetadata,
-	): string {
-		const visibleFields =
-			pendingCorrection.reason === "validation-required"
-				? pendingCorrection.fields
-						.map((field) => {
-							return renderCorrectionFieldHtml(field);
-						})
-						.join("\n")
-				: "";
-		const hiddenInputs = [
-			`    <input type="hidden" name="${escapeHtml(form.pendingCorrectionFieldName)}" value="${escapeHtml(JSON.stringify(pendingCorrection))}" />`,
-			`    <input type="hidden" name="${escapeHtml(form.conversationIdFieldName)}" value="${escapeHtml(conversationId ?? "")}" />`,
-			pendingCorrection.reason === "confirmation-required"
-				? `    <input type="hidden" name="${escapeHtml(form.confirmedFieldName)}" value="true" />`
-				: "",
-		]
-			.filter(Boolean)
-			.join("\n");
-		const submitLabel =
-			pendingCorrection.reason === "confirmation-required"
-				? form.confirmLabel
-				: form.submitLabel;
-
-		return [
-			'<article class="agentic-ui agentic-ui-correction">',
-			"  <header>",
-			"    <h1>Additional Input Required</h1>",
-			`    <p>${escapeHtml(pendingCorrection.message)}</p>`,
-			"  </header>",
-			`  <form id="${escapeHtml(form.formId)}" class="agentic-correction-form" data-agentic-callback="${escapeHtml(form.callbackName)}" data-agentic-reason="${escapeHtml(pendingCorrection.reason)}" data-agentic-tool-name="${escapeHtml(pendingCorrection.toolCall.toolName)}">`,
-			hiddenInputs,
-			visibleFields,
-			`    <button type="submit">${escapeHtml(submitLabel)}</button>`,
-			"  </form>",
-			"</article>",
-		]
-			.filter(Boolean)
-			.join("\n");
 	}
 }
 
@@ -1483,35 +1583,6 @@ function extractIssueEnumValues(
 	}
 
 	return [...new Set(enumValues)];
-}
-
-function renderCorrectionFieldHtml(
-	field: AgenticPendingCorrectionField,
-): string {
-	if (field.enumValues?.length) {
-		return [
-			'    <label class="agentic-correction-field">',
-			`      <span>${escapeHtml(field.name)}</span>`,
-			`      <select name="${escapeHtml(field.name)}">`,
-			'        <option value="">Select an option</option>',
-			...field.enumValues.map((value) => {
-				return `        <option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`;
-			}),
-			"      </select>",
-			"    </label>",
-		].join("\n");
-	}
-
-	const inputType = field.valueType === "number" ? "number" : "text";
-	const extraAttributes =
-		field.valueType === "number" ? ' inputmode="decimal" step="any"' : "";
-
-	return [
-		'    <label class="agentic-correction-field">',
-		`      <span>${escapeHtml(field.name)}</span>`,
-		`      <input type="${inputType}" name="${escapeHtml(field.name)}" placeholder="${escapeHtml(field.message)}"${extraAttributes} />`,
-		"    </label>",
-	].join("\n");
 }
 
 function normalizeCorrectionValues(
@@ -1619,6 +1690,62 @@ function unwrapCorrectionSchema(schema: ZodTypeAny): ZodTypeAny {
 	return schema;
 }
 
+function getRequiredToolFieldNames(schema: ZodTypeAny): string[] {
+	const baseSchema = unwrapCorrectionSchema(schema);
+
+	if (!(baseSchema instanceof z.ZodObject)) {
+		return [];
+	}
+
+	const shape = baseSchema.shape as Record<string, ZodTypeAny>;
+
+	return Object.entries(shape)
+		.filter(([, fieldSchema]) => !isOptionalToolFieldSchema(fieldSchema))
+		.map(([fieldName]) => fieldName);
+}
+
+function isOptionalToolFieldSchema(schema: ZodTypeAny): boolean {
+	const candidate = schema as ZodTypeAny & {
+		isOptional?: () => boolean;
+		removeDefault?: () => ZodTypeAny;
+		unwrap?: () => ZodTypeAny;
+	};
+
+	if (typeof candidate.isOptional === "function" && candidate.isOptional()) {
+		return true;
+	}
+
+	if (typeof candidate.removeDefault === "function") {
+		return isOptionalToolFieldSchema(candidate.removeDefault());
+	}
+
+	if (typeof candidate.unwrap === "function") {
+		return isOptionalToolFieldSchema(candidate.unwrap());
+	}
+
+	return false;
+}
+
+function isGuardrailEmptyValue(value: unknown): boolean {
+	if (value === undefined || value === null) {
+		return true;
+	}
+
+	if (typeof value === "string") {
+		return value.trim().length === 0;
+	}
+
+	if (Array.isArray(value)) {
+		return value.length === 0;
+	}
+
+	return false;
+}
+
+function normalizeIntentText(value: string): string {
+	return value.toLowerCase().normalize("NFKC");
+}
+
 /**
  * Creates the default mock provider used when no external SDK provider is supplied.
  */
@@ -1672,39 +1799,25 @@ export function createMockLLMProvider(
 			}
 
 			return {
-				phase: "render",
-				content:
-					request.outputFormat === "html"
-						? renderHtmlResponse(
-								request.prompt,
-								request.systemInstruction,
-								request.toolResults,
-							)
-						: renderMarkdownResponse(
-								request.prompt,
-								request.systemInstruction,
-								request.toolResults,
-							),
+				phase: "respond",
+				content: buildSummaryResponse(
+					request.prompt,
+					request.systemInstruction,
+					request.toolResults,
+				),
 			};
 		},
 		stream: async function* (
-			request: AgenticLLMRenderRequest,
-		): AsyncGenerator<AgenticLLMRenderStreamChunk, void, void> {
-			const content =
-				request.outputFormat === "html"
-					? renderHtmlResponse(
-							request.prompt,
-							request.systemInstruction,
-							request.toolResults,
-						)
-					: renderMarkdownResponse(
-							request.prompt,
-							request.systemInstruction,
-							request.toolResults,
-						);
+			request: AgenticLLMResponseRequest,
+		): AsyncGenerator<AgenticLLMResponseStreamChunk, void, void> {
+			const content = buildSummaryResponse(
+				request.prompt,
+				request.systemInstruction,
+				request.toolResults,
+			);
 
 			yield {
-				phase: "render",
+				phase: "respond",
 				delta: content,
 				content,
 			};
@@ -1916,80 +2029,46 @@ function tokenize(value: string): string[] {
 }
 
 /**
- * Builds a Markdown payload suitable for server-side rendering or streaming.
+ * Builds a grounded plain-text summary from executed tool results.
  */
-function renderMarkdownResponse(
+function buildSummaryResponse(
 	prompt: string,
 	systemInstruction: string | undefined,
 	toolResults: readonly AgenticToolExecutionResult[],
 ): string {
-	const header = "# Agentic UI Response";
-	const intro = systemInstruction
-		? `> System instruction: ${systemInstruction}`
-		: "> System instruction: none";
-	const body = toolResults.length
-		? toolResults
-				.map((result) => {
-					return [
-						`## Tool: ${result.toolName}`,
-						`Rationale: ${result.rationale}`,
-						`Duration: ${result.durationMs} ms`,
-						"```json",
-						JSON.stringify(result.result, null, 2),
-						"```",
-					].join("\n");
-				})
-				.join("\n\n")
-		: "## Tool Results\nNo tool call was required for this prompt.";
+	const lines = [
+		`Prompt: ${prompt}`,
+		`System instruction: ${systemInstruction ?? "none"}`,
+	];
 
-	return [header, intro, "", `## User Prompt\n${prompt}`, "", body].join("\n");
+	if (toolResults.length === 0) {
+		lines.push("No tool call was required for this prompt.");
+		return lines.join("\n");
+	}
+
+	lines.push(`Completed ${toolResults.length} tool call(s).`);
+	lines.push("Actions and retrieved data:");
+
+	for (const [index, result] of toolResults.entries()) {
+		lines.push(
+			`${index + 1}. ${result.toolName} (${result.durationMs} ms): ${summarizeToolResult(result.result)}`,
+		);
+	}
+
+	return lines.join("\n");
 }
 
-/**
- * Builds an HTML payload ready to inject into a render pipeline.
- */
-function renderHtmlResponse(
-	prompt: string,
-	systemInstruction: string | undefined,
-	toolResults: readonly AgenticToolExecutionResult[],
-): string {
-	const cards = toolResults.length
-		? toolResults
-				.map((result) => {
-					return [
-						'<section class="agentic-tool-card">',
-						`  <h2>${escapeHtml(result.toolName)}</h2>`,
-						`  <p>${escapeHtml(result.rationale)}</p>`,
-						`  <small>${result.durationMs.toFixed(2)} ms</small>`,
-						`  <pre><code>${escapeHtml(JSON.stringify(result.result, null, 2))}</code></pre>`,
-						"</section>",
-					].join("\n");
-				})
-				.join("\n")
-		: '<section class="agentic-tool-card"><p>No tool call was required for this prompt.</p></section>';
+function summarizeToolResult(result: unknown): string {
+	if (typeof result === "string") {
+		return result;
+	}
 
-	return [
-		'<article class="agentic-ui">',
-		"  <header>",
-		"    <h1>Agentic UI Response</h1>",
-		`    <p>${escapeHtml(systemInstruction ?? "No system instruction provided.")}</p>`,
-		"  </header>",
-		`  <section><h2>User Prompt</h2><p>${escapeHtml(prompt)}</p></section>`,
-		`  <div class="agentic-tool-results">${cards}</div>`,
-		"</article>",
-	].join("\n");
-}
+	const json = JSON.stringify(result);
+	if (!json) {
+		return "No result returned.";
+	}
 
-/**
- * Escapes unsafe HTML characters in text content.
- */
-function escapeHtml(value: string): string {
-	return value
-		.replaceAll("&", "&amp;")
-		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
-		.replaceAll('"', "&quot;")
-		.replaceAll("'", "&#39;");
+	return json.length <= 240 ? json : `${json.slice(0, 237)}...`;
 }
 
 /**

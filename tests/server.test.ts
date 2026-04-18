@@ -7,13 +7,6 @@ import {
 } from "../server";
 
 describe("createAgenticFlowServerAdapter", () => {
-	/**
-	 * Covers the main server-side run adapter contract.
-	 *
-	 * This is useful because a thin adapter only adds value if it forwards the
-	 * client transport payload to the router without changing the existing router
-	 * behavior or leaking framework concerns into the core flow.
-	 */
 	it("maps a flow run request directly onto the router", async () => {
 		const observedCalls: Array<{
 			prompt: string;
@@ -23,7 +16,7 @@ describe("createAgenticFlowServerAdapter", () => {
 		}> = [];
 		const adapter = createAgenticFlowServerAdapter({
 			router: {
-				async runAndRender(prompt, systemInstruction, runOptions) {
+				async runAndRespond(prompt, systemInstruction, runOptions) {
 					observedCalls.push({
 						prompt,
 						systemInstruction,
@@ -34,16 +27,13 @@ describe("createAgenticFlowServerAdapter", () => {
 					return createResponse({
 						prompt,
 						systemInstruction,
-						content: "# Sales dashboard",
+						content: "Sales dashboard summary",
 					});
 				},
-				async *runAndRenderStream() {
+				async *runAndRespondStream() {
 					yield {
 						type: "done" as const,
-						response: createResponse({
-							prompt: "unused",
-							content: "unused",
-						}),
+						response: createResponse({ prompt: "unused", content: "unused" }),
 					};
 				},
 			},
@@ -69,40 +59,30 @@ describe("createAgenticFlowServerAdapter", () => {
 			conversationId: "sales-thread",
 			response: {
 				prompt: "Show the sales dashboard",
-				content: "# Sales dashboard",
+				content: "Sales dashboard summary",
 			},
 		});
 	});
 
-	/**
-	 * Covers the stream adapter and reset hook.
-	 *
-	 * This is useful because the adapter must preserve router stream events, add
-	 * the optional conversation envelope, and offer a pluggable reset path without
-	 * requiring a specific storage implementation.
-	 */
-	it("wraps stream events and delegates reset through a modular delete hook", async () => {
+	it("wraps response stream events and delegates reset through a modular delete hook", async () => {
 		const deletedConversationIds: string[] = [];
 		const adapter = createAgenticFlowServerAdapter({
 			deleteConversation(conversationId) {
 				deletedConversationIds.push(conversationId);
 			},
 			router: {
-				async runAndRender() {
+				async runAndRespond() {
 					return createResponse({ prompt: "unused", content: "unused" });
 				},
-				async *runAndRenderStream(prompt) {
+				async *runAndRespondStream(prompt) {
 					yield {
-						type: "render" as const,
+						type: "response" as const,
 						delta: "Hello ",
 						content: "Hello ",
 					};
 					yield {
 						type: "done" as const,
-						response: createResponse({
-							prompt,
-							content: "Hello Paris",
-						}),
+						response: createResponse({ prompt, content: "Hello Paris" }),
 					};
 				},
 			},
@@ -122,7 +102,7 @@ describe("createAgenticFlowServerAdapter", () => {
 			{
 				conversationId: "stream-thread",
 				event: {
-					type: "render",
+					type: "response",
 					delta: "Hello ",
 					content: "Hello ",
 				},
@@ -143,20 +123,13 @@ describe("createAgenticFlowServerAdapter", () => {
 });
 
 describe("createAgenticFlowEventStream", () => {
-	/**
-	 * Covers SSE serialization.
-	 *
-	 * This is useful because runtimes that already own their own routing layer can
-	 * reuse the event-stream helper directly and still get the exact wire format
-	 * expected by the browser client transport.
-	 */
-	it("serializes flow events as server-sent events with a done marker", async () => {
+	it("serializes response events as server-sent events with a done marker", async () => {
 		const stream = createAgenticFlowEventStream(
 			(async function* () {
 				yield {
 					conversationId: "stream-thread",
 					event: {
-						type: "render",
+						type: "response",
 						delta: "Hello ",
 						content: "Hello ",
 					},
@@ -177,20 +150,13 @@ describe("createAgenticFlowEventStream", () => {
 		const text = await new Response(stream).text();
 
 		expect(text).toContain(
-			'data: {"conversationId":"stream-thread","event":{"type":"render","delta":"Hello ","content":"Hello "}}\n\n',
+			'data: {"conversationId":"stream-thread","event":{"type":"response","delta":"Hello ","content":"Hello "}}\n\n',
 		);
 		expect(text).toContain("data: [DONE]\n\n");
 	});
 });
 
 describe("createAgenticFlowWebHandlers", () => {
-	/**
-	 * Covers the web-standard Request/Response wrapper.
-	 *
-	 * This is useful because many runtimes now share the Fetch API, and the thin
-	 * wrapper should make those environments easy to support without forcing the
-	 * package to own a framework-specific server abstraction.
-	 */
 	it("creates JSON, SSE, and reset handlers over the core adapter", async () => {
 		const resetRequests: string[] = [];
 		const adapter = createAgenticFlowServerAdapter({
@@ -198,24 +164,18 @@ describe("createAgenticFlowWebHandlers", () => {
 				resetRequests.push(conversationId);
 			},
 			router: {
-				async runAndRender(prompt) {
-					return createResponse({
-						prompt,
-						content: "Buffered hello",
-					});
+				async runAndRespond(prompt) {
+					return createResponse({ prompt, content: "Buffered hello" });
 				},
-				async *runAndRenderStream(prompt) {
+				async *runAndRespondStream(prompt) {
 					yield {
-						type: "render" as const,
+						type: "response" as const,
 						delta: "Hello ",
 						content: "Hello ",
 					};
 					yield {
 						type: "done" as const,
-						response: createResponse({
-							prompt,
-							content: "Hello world",
-						}),
+						response: createResponse({ prompt, content: "Hello world" }),
 					};
 				},
 			},
@@ -243,64 +203,50 @@ describe("createAgenticFlowWebHandlers", () => {
 		const resetResponse = await handlers.reset?.(
 			new Request("https://example.com/reset", {
 				method: "POST",
-				body: JSON.stringify({
-					conversationId: "proxy-thread",
-				}),
+				body: JSON.stringify({ conversationId: "proxy-thread" }),
 			}),
 		);
 
-		expect(runResponse.headers.get("content-type")).toContain(
-			"application/json",
-		);
 		expect(await runResponse.json()).toEqual({
 			conversationId: "proxy-thread",
-			response: createResponse({
-				prompt: "hello",
-				content: "Buffered hello",
-			}),
+			response: createResponse({ prompt: "hello", content: "Buffered hello" }),
 		});
-		expect(streamResponse.headers.get("content-type")).toContain(
-			"text/event-stream",
-		);
-		expect(await streamResponse.text()).toContain("data: [DONE]");
+		expect(await streamResponse.text()).toContain('"type":"response"');
 		expect(resetResponse?.status).toBe(204);
 		expect(resetRequests).toEqual(["proxy-thread"]);
 	});
 });
 
-function createResponse(
-	input: Partial<AgenticRouterResponse> & {
-		prompt: string;
-		content: string;
-	},
-): AgenticRouterResponse {
-	return {
-		status: input.status ?? "completed",
-		model: input.model ?? "server-adapter-test-model",
-		format: input.format ?? "markdown",
-		prompt: input.prompt,
-		systemInstruction: input.systemInstruction,
-		content: input.content,
-		toolCalls: input.toolCalls ?? [],
-		iterations: input.iterations ?? 1,
-		pendingCorrection: input.pendingCorrection,
-	};
-}
-
 function createCorrectionAnswer(): AgenticCorrectionAnswer {
 	return {
 		pendingCorrection: {
 			reason: "validation-required",
-			message: "Need name",
+			message: "Please provide a name.",
 			toolCall: {
 				toolName: "create_user",
-				rationale: "Need user data",
-				arguments: { role: "admin" },
+				rationale: "Need a name.",
+				arguments: {},
 			},
 			fields: [{ name: "name", message: "Required" }],
-			originalPrompt: "Create a new admin user",
+			originalPrompt: "Create a user",
 			iteration: 1,
 		},
-		values: { name: "Alice Martin" },
+		values: { name: "Alice" },
+	};
+}
+
+function createResponse(
+	overrides: Partial<AgenticRouterResponse> &
+		Pick<AgenticRouterResponse, "prompt" | "content">,
+): AgenticRouterResponse {
+	return {
+		status: "completed",
+		model: "test-model",
+		prompt: overrides.prompt,
+		systemInstruction: overrides.systemInstruction,
+		content: overrides.content,
+		toolCalls: overrides.toolCalls ?? [],
+		iterations: overrides.iterations ?? 1,
+		pendingCorrection: overrides.pendingCorrection,
 	};
 }

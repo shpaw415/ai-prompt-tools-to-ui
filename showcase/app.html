@@ -424,7 +424,7 @@
 
 			.timeline-item[data-kind="tool-call"]   { border-left-color: var(--orange); }
 			.timeline-item[data-kind="tool-result"] { border-left-color: var(--teal); }
-			.timeline-item[data-kind="render"]      { border-color: var(--teal-border); border-left-color: var(--teal); background: var(--teal-dim); }
+			.timeline-item[data-kind="response"]    { border-color: var(--teal-border); border-left-color: var(--teal); background: var(--teal-dim); }
 			.timeline-item[data-kind="done"]        { border-left-color: var(--teal); }
 			.timeline-item[data-kind="pause"]       { border-left-color: var(--amber); }
 			.timeline-item[data-kind="prompt"]      { border-left-color: var(--violet); }
@@ -479,6 +479,41 @@
 				border: 1px solid var(--border);
 				min-height: 360px;
 				overflow: auto;
+				padding: 16px;
+			}
+
+			.response-panel {
+				display: grid;
+				gap: 16px;
+			}
+
+			.response-section {
+				display: grid;
+				gap: 10px;
+			}
+
+			.response-tools {
+				display: grid;
+				gap: 10px;
+			}
+
+			.response-tool-card {
+				padding: 12px;
+				border-radius: 10px;
+				background: #f8fafc;
+				border: 1px solid #e2e8f0;
+				display: grid;
+				gap: 6px;
+			}
+
+			.response-pre {
+				margin: 0;
+				white-space: pre-wrap;
+				word-break: break-word;
+				font-family: "IBM Plex Mono", monospace;
+				font-size: 12px;
+				line-height: 1.5;
+				color: #111827;
 			}
 
 			.render-placeholder {
@@ -612,7 +647,7 @@
 					<div class="w-hero">
 						<div>
 							<h1>Agentic HR control room.</h1>
-							<p class="lead">Stream tool planning, tool results, and HTML output live. Pause and resume corrections without page reloads.</p>
+							<p class="lead">Stream tool planning, tool results, and grounded text summaries live. Pause and resume corrections without page reloads.</p>
 						</div>
 						<div class="badges">
 							<span class="badge" id="conversation-badge">No conversation</span>
@@ -646,7 +681,7 @@
 
 				<div class="w-block">
 					<div class="block-header">
-						<div class="label">Rendered HTML output</div>
+						<div class="label">Summary and tool output</div>
 					</div>
 					<div class="render-frame" id="render-frame"></div>
 				</div>

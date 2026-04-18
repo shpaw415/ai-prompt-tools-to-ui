@@ -1,14 +1,14 @@
 import type { AgenticLLMProvider } from "../index";
 import {
 	buildNativePlanPrompt,
-	buildRenderStreamPrompt,
+	buildResponseStreamPrompt,
 	buildToolJsonSchema,
 	type HttpAgenticProviderClient,
 	type HttpAgenticProviderOptions,
 	iterateSSEMessages,
 	normalizeToolArguments,
 	normalizePlanResponse,
-	normalizeRenderResponse,
+	normalizeResponsePayload,
 	openEventStream,
 	parseJsonText,
 	postJson,
@@ -160,7 +160,7 @@ export function createAnthropicProvider<
 				`Anthropic ${request.phase}`,
 			);
 
-			return normalizeRenderResponse(parsed);
+			return normalizeResponsePayload(parsed);
 		},
 		stream: async function* (request) {
 			const eventStream = await openEventStream(`${baseUrl}/messages`, {
@@ -177,11 +177,11 @@ export function createAnthropicProvider<
 					temperature: 0,
 					stream: true,
 					system:
-						"You are a streaming render engine for an agentic router. Return only the final rendered output.",
+						"You are a streaming final response engine for an agentic router. Return only the final plain-text summary.",
 					messages: [
 						{
 							role: "user",
-							content: buildRenderStreamPrompt(request),
+							content: buildResponseStreamPrompt(request),
 						},
 					],
 				},
@@ -205,7 +205,7 @@ export function createAnthropicProvider<
 
 				content += delta;
 				yield {
-					phase: "render",
+					phase: "respond",
 					delta,
 					content,
 				};

@@ -2,6 +2,7 @@ import { AgenticFlowClient, createFetchAgenticFlowTransport } from "../client";
 
 const transport = createFetchAgenticFlowTransport({
 	baseUrl: "/api/flow",
+	resetPath: "reset",
 });
 const client = new AgenticFlowClient({ transport });
 
@@ -249,14 +250,14 @@ function recordFlowEvent(event) {
 				),
 			);
 			break;
-		case "render":
+		case "response":
 			if (!state.renderEventLogged) {
 				state.renderEventLogged = true;
 				state.timeline.unshift(
 					createTimelineItem(
-						"render",
-						"Streaming HTML response",
-						"The model output is being rendered into the main panel.",
+						"response",
+						"Streaming summary response",
+						"The model output is being returned as a grounded text summary.",
 					),
 				);
 			}
@@ -475,14 +476,17 @@ function renderCorrectionPanel() {
 function renderOutput() {
 	if (state.flow.pendingCorrection) {
 		if (state.lastCompletedContent) {
-			elements.renderFrame.innerHTML = state.lastCompletedContent;
+			elements.renderFrame.innerHTML = renderResponsePanel(
+				state.lastCompletedContent,
+				state.flow.toolCalls,
+			);
 			return;
 		}
 
 		elements.renderFrame.innerHTML = `
 			<div class="render-placeholder">
 				<div>
-					<div class="label">Rendered panel</div>
+					<div class="label">Summary panel</div>
 					<p>Interactive corrections are shown in the correction panel. Submit the missing fields there to continue this run.</p>
 				</div>
 			</div>
@@ -491,16 +495,49 @@ function renderOutput() {
 	}
 
 	if (state.flow.content) {
-		elements.renderFrame.innerHTML = state.flow.content;
+		elements.renderFrame.innerHTML = renderResponsePanel(
+			state.flow.content,
+			state.flow.toolCalls,
+		);
 		return;
 	}
 
 	elements.renderFrame.innerHTML = `
 		<div class="render-placeholder">
 			<div>
-				<div class="label">Rendered panel</div>
-				<p>Run a prompt to stream the agent's HTML output into this frame.</p>
+				<div class="label">Summary panel</div>
+				<p>Run a prompt to stream the agent's grounded summary and raw tool results into this panel.</p>
 			</div>
+		</div>
+	`;
+}
+
+function renderResponsePanel(content, toolCalls) {
+	const toolMarkup = toolCalls.length
+		? toolCalls
+				.map((toolCall, index) => {
+					return `
+						<article class="response-tool-card">
+							<div class="label">Tool ${index + 1}</div>
+							<strong>${escapeHtml(toolCall.toolName)}</strong>
+							<div class="muted">${escapeHtml(toolCall.rationale)}</div>
+							<pre class="response-pre">${escapeHtml(JSON.stringify(toolCall.result, null, 2))}</pre>
+						</article>
+					`;
+				})
+				.join("")
+		: '<div class="muted">No tool results were needed for this response.</div>';
+
+	return `
+		<div class="response-panel">
+			<section class="response-section">
+				<div class="label">Final summary</div>
+				<pre class="response-pre">${escapeHtml(content)}</pre>
+			</section>
+			<section class="response-section">
+				<div class="label">Tool results</div>
+				<div class="response-tools">${toolMarkup}</div>
+			</section>
 		</div>
 	`;
 }

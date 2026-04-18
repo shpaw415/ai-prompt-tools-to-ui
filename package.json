@@ -1,7 +1,7 @@
 {
 	"name": "ai-prompt-tools-to-ui",
 	"version": "0.1.0",
-	"description": "Agentic with LLM-driven tool orchestration and generative UI output.",
+	"description": "Tool-first agentic router with modular LLM providers, grounded summaries, and streamed tool activity.",
 	"type": "module",
 	"main": "./index.ts",
 	"module": "./index.ts",

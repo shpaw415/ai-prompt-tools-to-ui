@@ -1,11 +1,11 @@
 import { z, type ZodTypeAny } from "zod";
 import type {
-	AgenticLLMRenderStreamChunk,
+	AgenticLLMResponseStreamChunk,
 	AgenticLLMPlanRequest,
 	AgenticLLMPlanResponse,
 	AgenticLLMProviderRequest,
-	AgenticLLMRenderRequest,
-	AgenticLLMRenderResponse,
+	AgenticLLMResponseRequest,
+	AgenticLLMResponseResponse,
 	AgenticLLMToolDescriptor,
 	AgenticToolCallPlan,
 } from "../index";
@@ -49,8 +49,8 @@ export function buildPlanPrompt(request: AgenticLLMPlanRequest): string {
 		"You are the planning engine for an agentic router.",
 		"Return JSON only.",
 		"Do not invent missing required tool arguments.",
+		"For mutation tools (create/add/update/remove/delete/adjust), never guess required values.",
 		"If a tool is clearly needed but required fields are missing or ambiguous, select the tool anyway and omit the unknown fields so the router can request clarification.",
-		`Desired UI format: ${request.outputFormat}`,
 		`Maximum tool calls in this step: ${request.maxToolCalls}`,
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
@@ -72,10 +72,10 @@ export function buildNativePlanPrompt(request: AgenticLLMPlanRequest): string {
 		"Planning is not the render phase. Do not answer with HTML, prose, or a client-side form.",
 		"If the current tool results are already sufficient, do not call any tool.",
 		"Do not invent missing required tool arguments.",
+		"For mutation tools (create/add/update/remove/delete/adjust), never guess required values.",
 		"If a tool is clearly needed but required fields are missing or ambiguous, emit the tool call with only the known arguments so the router can ask the user for clarification.",
 		"Do not ask the user follow-up questions directly and do not replace a missing-argument tool call with a hand-written form. The router handles clarification after validation.",
 		"If the user wants to create, update, remove, or otherwise mutate backend data, emit the relevant tool call even when some required arguments are still missing.",
-		`Desired UI format: ${request.outputFormat}`,
 		`Maximum tool calls in this step: ${request.maxToolCalls}`,
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
@@ -86,12 +86,14 @@ export function buildNativePlanPrompt(request: AgenticLLMPlanRequest): string {
 	].join("\n\n");
 }
 
-export function buildRenderPrompt(request: AgenticLLMRenderRequest): string {
+export function buildResponsePrompt(
+	request: AgenticLLMResponseRequest,
+): string {
 	return [
-		"You are the rendering engine for an agentic router.",
+		"You are the final response engine for an agentic router.",
 		"Return JSON only.",
-		`Desired output format: ${request.outputFormat}`,
-		formatRenderStyleInstruction(request),
+		"Summarize only what the tool results prove. Do not invent unseen data.",
+		"Describe actions taken and the most relevant retrieved data in plain text.",
 		request.systemInstruction
 			? `System instruction: ${request.systemInstruction}`
 			: "System instruction: none",
@@ -104,13 +106,13 @@ export function buildRenderPrompt(request: AgenticLLMRenderRequest): string {
 	].join("\n\n");
 }
 
-export function buildRenderStreamPrompt(
-	request: AgenticLLMRenderRequest,
+export function buildResponseStreamPrompt(
+	request: AgenticLLMResponseRequest,
 ): string {
 	return [
-		"You are the streaming rendering engine for an agentic router.",
-		`Return only the final ${request.outputFormat} output.`,
-		formatRenderStyleInstruction(request),
+		"You are the streaming final response engine for an agentic router.",
+		"Return only the final plain-text summary.",
+		"Keep the summary grounded in tool results and do not invent unseen data.",
 		"Do not wrap the response in JSON.",
 		"Do not add code fences unless the requested output itself requires them.",
 		request.systemInstruction
@@ -237,9 +239,9 @@ export async function* iterateSSEMessages(
 }
 
 export async function collectStreamChunks(
-	chunks: AsyncIterable<AgenticLLMRenderStreamChunk>,
-): Promise<AgenticLLMRenderStreamChunk[]> {
-	const collected: AgenticLLMRenderStreamChunk[] = [];
+	chunks: AsyncIterable<AgenticLLMResponseStreamChunk>,
+): Promise<AgenticLLMResponseStreamChunk[]> {
+	const collected: AgenticLLMResponseStreamChunk[] = [];
 
 	for await (const chunk of chunks) {
 		collected.push(chunk);
@@ -390,19 +392,19 @@ export function normalizeToolArguments(
 	throw new Error(`${label} must be a JSON object.`);
 }
 
-export function normalizeRenderResponse(
+export function normalizeResponsePayload(
 	payload: unknown,
-): AgenticLLMRenderResponse {
+): AgenticLLMResponseResponse {
 	const content = (payload as { content?: unknown }).content;
 
 	if (typeof content !== "string") {
 		throw new Error(
-			"Provider render response must contain a string content field.",
+			"Provider response payload must contain a string content field.",
 		);
 	}
 
 	return {
-		phase: "render",
+		phase: "respond",
 		content,
 	};
 }
@@ -410,33 +412,17 @@ export function normalizeRenderResponse(
 export function toProviderPrompt(request: AgenticLLMProviderRequest): string {
 	return request.phase === "plan"
 		? buildPlanPrompt(request)
-		: buildRenderPrompt(request);
+		: buildResponsePrompt(request);
 }
 
 export function stripCodeFence(value: string): string {
 	return value.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
 }
 
-function formatRenderStyleInstruction(
-	request: AgenticLLMRenderRequest,
-): string {
-	const style = request.renderStyle
-		? `Requested styling strategy: ${request.renderStyle}.`
-		: "Requested styling strategy: none.";
-	const guidance = request.renderStyle
-		? describeRenderStyle(request.renderStyle)
-		: "";
-	const customInstruction = request.renderStyleInstruction
-		? `Additional styling instruction: ${request.renderStyleInstruction}`
-		: "Additional styling instruction: none.";
-
-	return [style, guidance, customInstruction].filter(Boolean).join(" ");
-}
-
 function formatConversationHistory(
 	history:
 		| AgenticLLMPlanRequest["conversationHistory"]
-		| AgenticLLMRenderRequest["conversationHistory"],
+		| AgenticLLMResponseRequest["conversationHistory"],
 ): string {
 	if (!history?.length) {
 		return "";
@@ -448,21 +434,6 @@ function formatConversationHistory(
 			return `${message.role.toUpperCase()}: ${message.content}`;
 		}),
 	].join("\n");
-}
-
-function describeRenderStyle(
-	style: AgenticLLMRenderRequest["renderStyle"],
-): string {
-	switch (style) {
-		case "tailwind":
-			return "Use TailwindCSS utility classes for layout, spacing, typography, and visual styling. Do not emit separate CSS rules unless strictly necessary.";
-		case "inline-css":
-			return "Use inline style attributes on the HTML elements. Do not rely on external stylesheets or utility frameworks.";
-		case "plain-css":
-			return "Return semantic HTML together with a plain CSS <style> block scoped to the generated markup. Do not rely on utility frameworks.";
-		default:
-			return "";
-	}
 }
 
 function normalizeToolCall(payload: unknown): AgenticToolCallPlan | null {

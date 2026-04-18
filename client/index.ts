@@ -422,7 +422,7 @@ export class AgenticFlowClient {
 					toolCalls: [...this.state.toolCalls, event.result],
 				});
 				return;
-			case "render":
+			case "response":
 				this.updateState({
 					status: "streaming",
 					conversationId,
@@ -477,9 +477,10 @@ export function createFetchAgenticFlowTransport(
 		options.baseUrl,
 		options.streamPath ?? "stream",
 	);
-	const resetUrl = options.resetPath
-		? resolveTransportUrl(options.baseUrl, options.resetPath)
-		: undefined;
+	const resetUrl = resolveTransportUrl(
+		options.baseUrl,
+		options.resetPath ?? "reset",
+	);
 
 	return {
 		async run(request, requestOptions) {
@@ -532,12 +533,6 @@ export function createFetchAgenticFlowTransport(
 			}
 		},
 		async reset(request, requestOptions) {
-			if (!resetUrl) {
-				throw new Error(
-					"Reset transport is not configured. Provide resetPath or a custom transport.reset implementation.",
-				);
-			}
-
 			const response = await fetchImplementation(resetUrl, {
 				method: "POST",
 				...options.requestInit,

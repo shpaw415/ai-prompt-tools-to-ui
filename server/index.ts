@@ -38,7 +38,7 @@ export interface AgenticFlowServerAdapter {
 }
 
 export interface AgenticFlowServerAdapterOptions {
-	router: Pick<AgenticRouter, "runAndRender" | "runAndRenderStream">;
+	router: Pick<AgenticRouter, "runAndRespond" | "runAndRespondStream">;
 	historyProvider?: Pick<AgenticConversationHistoryProvider, "delete">;
 	deleteConversation?: (
 		conversationId: string,
@@ -68,17 +68,17 @@ export interface AgenticFlowEventStreamOptions {
 export function createAgenticFlowServerAdapter(
 	options: AgenticFlowServerAdapterOptions,
 ): AgenticFlowServerAdapter {
-	const includeConversationId =
-		options.includeConversationIdInEnvelope ?? true;
+	const includeConversationId = options.includeConversationIdInEnvelope ?? true;
 	const deleteConversation =
 		options.deleteConversation ??
 		(options.historyProvider?.delete
-			? (conversationId: string) => options.historyProvider?.delete?.(conversationId)
+			? (conversationId: string) =>
+					options.historyProvider?.delete?.(conversationId)
 			: undefined);
 
 	const adapter: AgenticFlowServerAdapter = {
 		async run(request) {
-			const response = await options.router.runAndRender(
+			const response = await options.router.runAndRespond(
 				request.prompt,
 				request.systemInstruction,
 				{
@@ -95,7 +95,7 @@ export function createAgenticFlowServerAdapter(
 			};
 		},
 		async *stream(request) {
-			for await (const event of options.router.runAndRenderStream(
+			for await (const event of options.router.runAndRespondStream(
 				request.prompt,
 				request.systemInstruction,
 				{
@@ -198,9 +198,7 @@ export function createAgenticFlowEventStream(
 
 			try {
 				for await (const event of events) {
-					controller.enqueue(
-						encoder.encode(serializeSSEData(event)),
-					);
+					controller.enqueue(encoder.encode(serializeSSEData(event)));
 				}
 
 				if (includeDoneMarker) {
@@ -278,8 +276,6 @@ function toError(error: unknown): Error {
 	}
 
 	return new Error(
-		typeof error === "string"
-			? error
-			: "Unknown server adapter error.",
+		typeof error === "string" ? error : "Unknown server adapter error.",
 	);
 }
