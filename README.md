@@ -1,19 +1,19 @@
 # AI-prompt-tools
 
-Tool-first agentic router for Frame-Master and Bun apps.
+Tool-first agentic router for any Runtime.
 
 The package plans tool calls with a pluggable LLM provider, executes your registered tools, then returns a grounded plain-text summary plus the raw tool results.
 
 ## Installation
 
 ```bash
-bun add ai-prompt-tools-to-ui
+bun add ai-prompt-tools
 ```
 
 ## Basic usage
 
 ```typescript
-import { AgenticRouter, z } from "ai-prompt-tools-to-ui";
+import { AgenticRouter, z } from "ai-prompt-tools";
 
 const router = new AgenticRouter({
   model: "mock-agentic-llm",
@@ -57,7 +57,7 @@ If you already know how to summarize certain tool results, you can bypass the pr
 import {
   AgenticRouter,
   type AgenticLLMResponseRequest,
-} from "ai-prompt-tools-to-ui";
+} from "ai-prompt-tools";
 
 const router = new AgenticRouter({
   responseResolver: async (request: AgenticLLMResponseRequest) => {
@@ -85,7 +85,7 @@ The router can persist prior turns through a pluggable history provider. History
 import {
   AgenticRouter,
   createInMemoryHistoryProvider,
-} from "ai-prompt-tools-to-ui";
+} from "ai-prompt-tools";
 
 const router = new AgenticRouter({
   historyProvider: createInMemoryHistoryProvider(),
@@ -116,7 +116,7 @@ Built-in providers:
 The router can pause before tool execution when a required field is missing or when a sensitive action needs explicit confirmation.
 
 ```typescript
-import { AgenticRouter, z } from "ai-prompt-tools-to-ui";
+import { AgenticRouter, z } from "ai-prompt-tools";
 
 const router = new AgenticRouter({
   enableInteractiveCorrections: true,
@@ -178,8 +178,8 @@ for await (const event of router.runAndRespondStream("Weather in Paris")) {
 
 The package ships with:
 
-- `ai-prompt-tools-to-ui/client` for browser-side flow state and fetch transport helpers
-- `ai-prompt-tools-to-ui/server` for thin server adapters and SSE helpers
+- `ai-prompt-tools/client` for browser-side flow state and fetch transport helpers
+- `ai-prompt-tools/server` for thin server adapters and SSE helpers
 
 These adapters preserve the same summary-plus-tool-results contract used by the core router.
 
